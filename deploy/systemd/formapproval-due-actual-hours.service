@@ -1,0 +1,10 @@
+[Unit]
+Description=OFG Forms due actual-hours and checklist follow-up job
+Wants=formapproval.service
+After=formapproval.service postgresql.service
+
+[Service]
+Type=oneshot
+User=ofgadmin
+WorkingDirectory=/home/ofgadmin/codex-projects/formapproval
+ExecStart=/usr/bin/node /home/ofgadmin/codex-projects/formapproval/scripts/run-scheduled-job.js sendDueActualHoursRequests

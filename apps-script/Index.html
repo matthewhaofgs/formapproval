@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><?= appName ?></title>
+    <link rel="icon" type="image/svg+xml" href="https://ofg.nsw.edu.au/wp-content/uploads/2020/12/OFG_Crest-With-Border-01.svg">
+    <link rel="shortcut icon" href="https://ofg.nsw.edu.au/wp-content/uploads/2020/12/OFG_Crest-With-Border-01.svg">
+    <?!= include('Styles'); ?>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <img class="brand-mark" src="https://ofg.nsw.edu.au/wp-content/uploads/2020/12/OFG_Crest-With-Border-01.svg" alt="Oxford Falls Grammar">
+          <div>
+            <p class="eyebrow">Oxford Falls Grammar</p>
+            <h1><?= appName ?></h1>
+          </div>
+        </div>
+        <nav class="topnav" aria-label="Primary">
+          <a href="<?= webAppUrl ?>">New request</a>
+          <a href="<?= webAppUrl ?>?mode=dashboard&role=requester" data-nav-role="requester">My Requests</a>
+          <a href="<?= webAppUrl ?>?mode=dashboard&role=approver" data-nav-role="approver">Approver</a>
+          <a href="<?= webAppUrl ?>?mode=dashboard&role=admin" data-nav-role="admin">Admin</a>
+        </nav>
+      </header>
+      <div id="global-progress" class="global-progress" role="status" aria-live="polite" aria-hidden="true" hidden>
+        <div class="progress-card">
+          <span class="progress-track"><span class="progress-bar"></span></span>
+          <strong data-progress-label>Loading...</strong>
+          <span class="progress-help" data-progress-help></span>
+        </div>
+      </div>
+      <div id="notice" class="notice" hidden></div>
+      <section id="app" class="workspace" aria-live="polite"></section>
+    </main>
+    <script>
+      window.INITIAL_STATE = <?!= stateJson ?>;
+      window.WEB_APP_URL = '<?= webAppUrl ?>';
+    </script>
+    <?!= include('JavaScript'); ?>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run OFG Forms due actual-hours follow-up job daily
+
+[Timer]
+OnCalendar=07:00 Australia/Sydney
+Persistent=true
+Unit=formapproval-due-actual-hours.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,4488 @@
+<script>
+  const state = window.INITIAL_STATE || { mode: 'request' };
+  const WEB_APP_URL = window.WEB_APP_URL || state.webAppUrl || '';
+  const app = document.getElementById('app');
+  const notice = document.getElementById('notice');
+  const globalProgress = document.getElementById('global-progress');
+  const globalProgressLabel = globalProgress ? globalProgress.querySelector('[data-progress-label]') : null;
+  const globalProgressHelp = globalProgress ? globalProgress.querySelector('[data-progress-help]') : null;
+  const globalProgressBar = globalProgress ? globalProgress.querySelector('.progress-bar') : null;
+  let activeProgressCount = 0;
+  let progressHideTimer = 0;
+  let progressTickTimer = 0;
+  let progressStartedAt = 0;
+  let progressBaseMessage = '';
+  let progressMethod = '';
+  let progressEstimateMs = 0;
+  let progressStorageKey = '';
+  let draggedWorkflowStep = null;
+
+  function mealBreakRulesHtml(planned) {
+    return `
+      <div class="info-block">
+        <h3>Meal Break Rules</h3>
+        <p>You must take an unpaid meal break of 30 minutes if you work more than 5 hours in a single day (Clause 21.1). This is your first unpaid meal break. You cannot work through your meal break to claim it as overtime.</p>
+        <p>If you are required to work more than 1.5 hours of overtime after your ordinary finish time, the School will provide a suitable meal or pay you a Meal Allowance (Clause 15.11).</p>
+        <p>If your duties extend into the evening and you work past 6:00pm, you are entitled to a second unpaid meal break for an "evening meal" under Clause 21.1. The timing of this break must be mutually agreed upon between you and the School.</p>
+        <p>${planned ? 'Ensure all planned unpaid meal breaks are deducted from the total hours requested.' : 'Ensure all unpaid meal breaks are deducted from the total hours claimed.'}</p>
+      </div>
+    `;
+  }
+
+  const ROLE_LABELS = {
+    requester: 'My Requests',
+    approver: 'Approvals',
+    admin: 'Admin'
+  };
+
+  const dashboardState = {
+    role: state.role || 'requester',
+    email: state.currentUserEmail || '',
+    selectedProcess: state.selectedProcess || '',
+    adminView: state.adminView || 'forms',
+    workflowProcess: state.workflowProcess || '',
+    workflowStage: state.workflowStage || '',
+    roleAvailability: normalizeRoleAvailability(state.roleAvailability),
+    data: null,
+    adminChooserData: null,
+    adminDashboards: {}
+  };
+
+  bindGlobalLoadingIndicators();
+  applyTopNavRoleVisibility();
+  render();
+
+  function render() {
+    if (state.mode === 'dashboard') {
+      renderDashboardShell();
+      bindDashboardShell();
+      loadDashboard();
+      return;
+    }
+
+    if (state.mode === 'chooser') {
+      app.innerHTML = renderFormChooser(state.processes || []);
+      return;
+    }
+
+    if (state.mode === 'approve') {
+      app.innerHTML = renderApproval();
+      bindApproval();
+      return;
+    }
+
+    if (state.mode === 'actual' || state.mode === 'checklist') {
+      app.innerHTML = renderActualHours();
+      bindActualHours();
+      return;
+    }
+
+    if (state.mode === 'edit') {
+      app.innerHTML = renderRequestForm();
+      bindRequestForm();
+      return;
+    }
+
+    if (state.mode === 'closed') {
+      app.innerHTML = renderMessagePanel(state.title, state.message, `${state.request ? renderRequestSummary(state.request, true) : ''}${renderClosedAction(state.closedAction)}`);
+      return;
+    }
+
+    if (state.mode === 'error') {
+      showNotice(state.message, 'error');
+      app.innerHTML = renderMessagePanel(
+        state.title || 'Link unavailable',
+        state.message || 'The link could not be opened.',
+        `<div class="actions inline"><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'approver' }))}">Workflow dashboard</a><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'requester' }))}">My Requests</a></div>`
+      );
+      return;
+    }
+
+    app.innerHTML = renderRequestForm();
+    bindRequestForm();
+  }
+
+  function renderFormChooser(processes) {
+    return `
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Start a request</h2>
+            <p>Select the form you need.</p>
+          </div>
+        </div>
+        ${renderProcessCardGrid(processes, process => appUrl('request', { process: process.key }), 'Open form')}
+      </section>
+    `;
+  }
+
+  function renderProcessCardGrid(processes, hrefBuilder, actionLabel, attributesBuilder) {
+    if (!processes.length) {
+      return '<p class="muted">No request forms are currently available.</p>';
+    }
+
+    return `
+      <div class="process-grid">
+        ${processes.map(process => renderProcessCard(process, hrefBuilder(process), actionLabel, attributesBuilder ? attributesBuilder(process) : '')).join('')}
+      </div>
+    `;
+  }
+
+  function renderProcessCard(process, href, actionLabel, extraAttributes) {
+    const action = actionLabel ? `<em>${escapeHtml(actionLabel)}</em>` : '';
+    const counts = process.requestCount === undefined ? '' : `
+      <div class="process-counts">
+        <span>${escapeHtml(String(process.requestCount))} total</span>
+        <span>${escapeHtml(String(process.pendingCount || 0))} open</span>
+      </div>
+    `;
+    return `
+      <a class="process-card" href="${escapeHtml(href)}" ${extraAttributes || ''}>
+        <strong>${escapeHtml(process.name || process.key)}</strong>
+        ${process.description ? `<span>${escapeHtml(process.description)}</span>` : ''}
+        ${counts}
+        ${action}
+      </a>
+    `;
+  }
+
+  function renderDashboardShell() {
+    const tabs = availableDashboardRoles().map(role => dashboardTab(role)).join('');
+    app.innerHTML = `
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>${escapeHtml(ROLE_LABELS[dashboardState.role] || 'Dashboard')} dashboard</h2>
+            ${state.currentUserEmail ? `<p>Signed in as ${escapeHtml(state.currentUserEmail)}</p>` : ''}
+          </div>
+          <div class="tabs" role="tablist" aria-label="Dashboard role">
+            ${tabs}
+          </div>
+        </div>
+        <div id="dashboard-body" class="stack"></div>
+      </section>
+    `;
+  }
+
+  function dashboardTab(role) {
+    return `<button type="button" class="${dashboardState.role === role ? 'active' : ''}" data-role="${role}">${escapeHtml(ROLE_LABELS[role])}</button>`;
+  }
+
+  function availableDashboardRoles() {
+    return ['requester', 'approver', 'admin'].filter(role => {
+      return role === 'requester' ||
+        dashboardState.roleAvailability[role] ||
+        dashboardState.role === role;
+    });
+  }
+
+  function normalizeRoleAvailability(availability) {
+    const known = availability && typeof availability === 'object';
+    return {
+      requester: true,
+      approver: known ? Boolean(availability.approver) : true,
+      admin: known ? Boolean(availability.admin) : true
+    };
+  }
+
+  function applyTopNavRoleVisibility() {
+    document.querySelectorAll('[data-nav-role]').forEach(link => {
+      const role = link.dataset.navRole;
+      if (role === 'requester') {
+        link.hidden = false;
+        return;
+      }
+      link.hidden = !dashboardState.roleAvailability[role];
+    });
+  }
+
+  function bindDashboardShell() {
+    document.querySelectorAll('[data-role]').forEach(button => {
+      button.addEventListener('click', event => {
+        const role = event.currentTarget.dataset.role;
+        showGlobalProgress('Loading dashboard...');
+        window.top.location.href = appUrl('dashboard', { role });
+      });
+    });
+  }
+
+  function loadDashboard() {
+    const body = document.getElementById('dashboard-body');
+    clearNotice();
+
+    body.innerHTML = renderLoading('Loading dashboard');
+    const payload = dashboardLoadPayload();
+    runServer('getDashboardData', payload, dashboardLoadTimeoutMs(payload))
+      .then(result => {
+        renderLoadedDashboardData(body, result);
+      })
+      .catch(error => {
+        body.innerHTML = renderAuthError(error);
+      });
+  }
+
+  function dashboardLoadPayload() {
+    const payload = {
+      role: dashboardState.role,
+      email: dashboardState.email,
+      process: dashboardState.selectedProcess
+    };
+    if (dashboardState.role === 'admin' && !dashboardState.selectedProcess) {
+      payload.preloadAdminDashboards = true;
+    }
+    return payload;
+  }
+
+  function dashboardLoadTimeoutMs(payload) {
+    if (payload && payload.role === 'admin' && payload.preloadAdminDashboards) {
+      return 330000;
+    }
+    if (payload && payload.role === 'admin') {
+      return 180000;
+    }
+    return 45000;
+  }
+
+  function renderLoadedDashboardData(body, result) {
+    if (!result || !result.ok) {
+      throw new Error((result && result.message) || 'Dashboard could not be loaded.');
+    }
+    dashboardState.data = result;
+    dashboardState.email = result.email || dashboardState.email;
+    dashboardState.roleAvailability = normalizeRoleAvailability(result.roleAvailability || dashboardState.roleAvailability);
+    applyTopNavRoleVisibility();
+    if (result.role === 'admin' && !result.selectedProcess) {
+      dashboardState.adminChooserData = result;
+      dashboardState.adminDashboards = result.adminDashboards || {};
+    }
+    if (result.role === 'admin' && result.selectedProcess) {
+      updateCachedAdminDashboard(result);
+    }
+    body.innerHTML = renderDashboardData(result);
+    bindDashboardActions();
+  }
+
+  function updateCachedAdminDashboard(result) {
+    if (!result || !result.selectedProcess || !dashboardState.adminChooserData) {
+      return;
+    }
+    dashboardState.adminDashboards[result.selectedProcess] = result;
+    dashboardState.adminChooserData.adminDashboards = dashboardState.adminDashboards;
+    (dashboardState.adminChooserData.adminProcesses || []).forEach(process => {
+      if (process.key !== result.selectedProcess) {
+        return;
+      }
+      process.requestCount = result.counts ? result.counts.total : (result.requests || []).length;
+      process.pendingCount = result.counts ? result.counts.pending : (result.requests || []).filter(request => request.isPending).length;
+      process.stoppedCount = (result.requests || []).filter(request => request.isStopped).length;
+    });
+  }
+
+  function renderDashboardData(data) {
+    dashboardState.selectedProcess = data.selectedProcess || '';
+    if (data.role === 'admin' && !data.selectedProcess) {
+      return renderAdminProcessChooser(data);
+    }
+
+    const requests = data.requests || [];
+    const counts = data.counts || {};
+    const awaitingActual = requests.filter(request => request.waitingOnType === 'employee').length;
+    const stoppedRequests = requests.filter(request => request.isStopped);
+    const completedRequests = requests.filter(request => request.isClosed && !request.isStopped);
+    let sections = '';
+    let metrics = '';
+
+    if (data.role === 'approver') {
+      const assigned = requests.filter(request => request.canApprove);
+      const relatedInProgress = requests.filter(request => request.isPending && !request.canApprove);
+      sections += renderRequestSection('Assigned to me', assigned, data.role, { collapsible: true, open: false });
+      sections += renderRequestSection('In-progress / related requests', relatedInProgress, data.role, { collapsible: true, open: false });
+      sections += renderRequestSection('Completed requests', completedRequests, data.role, { collapsible: true, open: false });
+      sections += renderRequestSection('Cancelled / denied requests', stoppedRequests, data.role, { collapsible: true, open: false });
+      metrics = `
+        ${kpi(counts.total || 0, 'Visible requests')}
+        ${kpi(counts.waitingForMe || 0, 'Needs my decision')}
+        ${kpi(relatedInProgress.length, 'In progress')}
+        ${kpi(completedRequests.length, 'Completed')}
+      `;
+    } else if (data.role === 'requester') {
+      sections += renderRequestSection('Active requests', requests.filter(request => request.isPending), data.role);
+      sections += renderRequestSection('Closed requests', requests.filter(request => request.isClosed), data.role);
+      metrics = `
+        ${kpi(counts.total || 0, 'My Requests')}
+        ${kpi(counts.pending || 0, 'In progress')}
+        ${kpi(awaitingActual, 'Need actual hours')}
+        ${kpi(counts.closed || 0, 'Closed')}
+      `;
+    } else {
+      sections += renderRequestSection('Incomplete requests', requests.filter(request => request.isPending), data.role, { collapsible: true, open: false });
+      sections += renderRequestSection('Completed requests', completedRequests, data.role, { collapsible: true, open: false });
+      sections += renderRequestSection('Cancelled / denied requests', stoppedRequests, data.role, { collapsible: true, open: false });
+      metrics = `
+        ${kpi(counts.total || 0, 'All requests')}
+        ${kpi(counts.pending || 0, 'Incomplete')}
+        ${kpi(completedRequests.length, 'Completed')}
+        ${kpi(stoppedRequests.length, 'Cancelled / denied')}
+      `;
+    }
+
+    return `
+      ${data.role === 'admin' ? renderAdminDashboardContext(data) : ''}
+      <div class="kpi-row">
+        ${metrics}
+      </div>
+      ${data.role === 'admin' || data.role === 'approver' ? renderDashboardFilter(requests.length) : ''}
+      ${sections || '<p class="muted">No requests found.</p>'}
+    `;
+  }
+
+  function renderAdminProcessChooser(data) {
+    const processes = Array.isArray(data) ? data : (data.adminProcesses || []);
+    const dashboards = Array.isArray(data) ? {} : (data.adminDashboards || {});
+    const activeView = data.canManageUsers && ['users', 'workflows'].indexOf(dashboardState.adminView) !== -1
+      ? dashboardState.adminView
+      : 'forms';
+    return `
+      <div class="stack">
+        ${renderAdminSubmenu(activeView, data.canManageUsers)}
+        ${activeView === 'users'
+          ? renderAdminUserManagement(data.userManagement || {})
+          : (activeView === 'workflows'
+            ? renderAdminWorkflowManagement(data.workflowManagement || {})
+            : renderAdminDashboardChooserContent(data, processes, dashboards))}
+      </div>
+    `;
+  }
+
+  function renderAdminSubmenu(activeView, canManageUsers) {
+    if (!canManageUsers) {
+      return '';
+    }
+    return `
+      <nav class="admin-submenu" aria-label="Admin menu">
+        ${adminSubmenuButton('forms', 'Form dashboards', activeView)}
+        ${adminSubmenuButton('users', 'User access', activeView)}
+        ${adminSubmenuButton('workflows', 'Approval flows', activeView)}
+      </nav>
+    `;
+  }
+
+  function adminSubmenuButton(view, label, activeView) {
+    return `<button class="button secondary ${activeView === view ? 'active' : ''}" type="button" data-admin-view="${escapeHtml(view)}" ${activeView === view ? 'aria-current="page"' : ''}>${escapeHtml(label)}</button>`;
+  }
+
+  function renderAdminDashboardChooserContent(data, processes, dashboards) {
+    return `
+      <div>
+        <h3>Admin sections</h3>
+        <p class="muted">Select a form to view its requests and admin actions.</p>
+      </div>
+      ${renderAdminDatabaseStatus(data)}
+      ${renderProcessCardGrid(
+        processes,
+        process => appUrl('dashboard', { role: 'admin', process: process.key }),
+        '',
+        process => `data-admin-process="${escapeHtml(process.key)}" data-admin-cached="${dashboards[process.key] ? 'true' : 'false'}"`
+      )}
+    `;
+  }
+
+  function renderAdminUserManagement(userManagement) {
+    const globalAdmins = userManagement.globalAdmins || [];
+    const processes = userManagement.processes || [];
+    return `
+      <section class="admin-users" data-admin-user-management>
+        <div class="admin-users-heading">
+          <div>
+            <h3>User access</h3>
+            <p class="muted">Manage global admins and process dashboard admins.</p>
+          </div>
+        </div>
+        <form class="stack" data-admin-user-form novalidate>
+          ${renderAdminAddPanel(processes)}
+          ${renderAdminAccessTable(globalAdmins, processes)}
+          <div class="actions inline">
+            <button class="button primary" type="submit">Save changes</button>
+          </div>
+        </form>
+      </section>
+    `;
+  }
+
+  function renderAdminAddPanel(processes) {
+    const processOptions = (processes || []).map(process => {
+      return `<option value="processAdmins::${escapeHtml(process.key)}">${escapeHtml(process.name || process.key)} dashboard</option>`;
+    }).join('');
+    return `
+      <fieldset class="admin-add-panel" data-admin-add-panel>
+        <legend>Add admin</legend>
+        <div class="admin-add-grid">
+          <label class="field">
+            <span>Email</span>
+            <input type="email" inputmode="email" autocomplete="off" placeholder="name@example.edu" data-admin-email-input>
+          </label>
+          <label class="field">
+            <span>Access</span>
+            <select data-admin-scope-select>
+              <option value="globalAdmins::global">Global admins</option>
+              ${processOptions}
+            </select>
+          </label>
+          <button class="button secondary" type="button" data-add-admin-email>Add admin</button>
+        </div>
+      </fieldset>
+    `;
+  }
+
+  function renderAdminAccessTable(globalAdmins, processes) {
+    const rows = [
+      renderAdminAccessTableRow({
+        scope: 'globalAdmins',
+        key: 'global',
+        title: 'Global admins',
+        description: 'All dashboards and user access',
+        emails: globalAdmins || []
+      })
+    ].concat((processes || []).map(process => renderAdminAccessTableRow({
+      scope: 'processAdmins',
+      key: process.key,
+      title: `${process.name || process.key} dashboard`,
+      description: process.description || 'Dashboard access',
+      emails: process.adminEmails || []
+    })));
+    return `
+      <div class="admin-access-table-wrap">
+        <table class="admin-access-table">
+          <caption>Admin access</caption>
+          <thead>
+            <tr>
+              <th scope="col">Access</th>
+              <th scope="col">Admins</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderAdminAccessTableRow(options) {
+    const count = (options.emails || []).length;
+    return `
+      <tr data-admin-access-group>
+        <th scope="row">
+          <div class="admin-access-label">
+            <strong>${escapeHtml(options.title)}</strong>
+            <span>${escapeHtml(options.description || '')}</span>
+            <span class="admin-access-count" data-admin-count>${escapeHtml(adminCountLabel(count))}</span>
+          </div>
+        </th>
+        <td>
+          ${renderAdminEmailList(options.scope, options.key, options.emails || [])}
+        </td>
+      </tr>
+    `;
+  }
+
+  function renderAdminEmailList(scope, key, emails) {
+    return `
+      <div class="admin-user-list" data-admin-list="${escapeHtml(scope)}" data-process-key="${escapeHtml(key || '')}">
+        ${(emails || []).map(renderAdminEmailRow).join('')}
+        <p class="admin-empty" data-admin-empty ${emails && emails.length ? 'hidden' : ''}>No admins assigned.</p>
+      </div>
+    `;
+  }
+
+  function renderAdminEmailRow(email) {
+    return `
+      <div class="admin-user-row" data-admin-email="${escapeHtml(email)}">
+        <span class="admin-user-email">${escapeHtml(email)}</span>
+        <button class="button secondary" type="button" data-remove-admin-email>Remove</button>
+      </div>
+    `;
+  }
+
+  function adminCountLabel(count) {
+    return `${count} admin${count === 1 ? '' : 's'}`;
+  }
+
+  function renderAdminWorkflowManagement(workflowManagement) {
+    const processes = workflowManagement.processes || [];
+    if (!processes.length) {
+      return '<p class="muted">No enabled processes are available.</p>';
+    }
+
+    let selectedKey = dashboardState.workflowProcess;
+    if (!processes.some(process => process.key === selectedKey)) {
+      selectedKey = processes[0].key;
+      dashboardState.workflowProcess = selectedKey;
+    }
+    const process = processes.find(item => item.key === selectedKey) || processes[0];
+    const stages = process.stages && process.stages.length
+      ? process.stages
+      : [{ key: 'approval', label: 'Approval', steps: [] }];
+    const conditionFields = process.conditionFields || [];
+    const recipientFields = process.recipientFields || [];
+    let activeStage = dashboardState.workflowStage;
+    if (!stages.some(stage => stage.key === activeStage)) {
+      activeStage = stages[0].key;
+      dashboardState.workflowStage = activeStage;
+    }
+
+    return `
+      <section class="admin-workflows" data-admin-workflow-management>
+        <div class="admin-users-heading">
+          <div>
+            <h3>Approval flows</h3>
+            <p class="muted">Configure approval, action, acknowledgement, and notification steps.</p>
+          </div>
+        </div>
+        <form class="workflow-editor stack" data-admin-workflow-form data-process-key="${escapeHtml(process.key)}" novalidate>
+          <div class="workflow-editor-toolbar">
+            <label class="field workflow-process-field">
+              <span>Process</span>
+              <select data-workflow-process-select>
+                ${processes.map(item => `<option value="${escapeHtml(item.key)}" ${item.key === process.key ? 'selected' : ''}>${escapeHtml(item.name || item.key)}</option>`).join('')}
+              </select>
+            </label>
+            <div class="workflow-editor-meta">
+              <strong>${escapeHtml(process.name || process.key)}</strong>
+              <span>${escapeHtml(process.description || 'Workflow configuration')}</span>
+            </div>
+          </div>
+          ${renderWorkflowStageTabs(stages, activeStage)}
+          <div class="workflow-stage-panels">
+            ${stages.map(stage => renderWorkflowStagePanel(stage, activeStage, stages, conditionFields, recipientFields)).join('')}
+          </div>
+          <div class="actions inline">
+            <button class="button primary" type="submit">Save workflow</button>
+          </div>
+        </form>
+      </section>
+    `;
+  }
+
+  function renderWorkflowStageTabs(stages, activeStage) {
+    return `
+      <div class="workflow-stage-tabs" role="tablist" aria-label="Workflow stages">
+        ${stages.map(stage => `
+          <button class="button secondary ${stage.key === activeStage ? 'active' : ''}" type="button" role="tab" data-workflow-stage-tab="${escapeHtml(stage.key)}" ${stage.key === activeStage ? 'aria-selected="true"' : 'aria-selected="false"'}>
+            ${escapeHtml(stage.label || stage.key)}
+          </button>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderWorkflowStagePanel(stage, activeStage, stages, conditionFields, recipientFields) {
+    const steps = stage.steps || [];
+    return `
+      <section class="workflow-stage-editor" data-workflow-stage-panel data-workflow-stage="${escapeHtml(stage.key)}" ${stage.key === activeStage ? '' : 'hidden'}>
+        <div class="workflow-stage-editor-heading">
+          <div>
+            <h4>${escapeHtml(stage.label || stage.key)}</h4>
+            <p class="muted">${escapeHtml(workflowStageHelp(stage.key))}</p>
+          </div>
+          <button class="button secondary" type="button" data-add-workflow-step data-stage-key="${escapeHtml(stage.key)}">Add step</button>
+        </div>
+        <div class="workflow-step-list-editor" data-workflow-step-list>
+          ${steps.map((step, index) => renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields)).join('')}
+          <p class="admin-empty" data-workflow-empty ${steps.length ? 'hidden' : ''}>No steps in this stage.</p>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderWorkflowStepEditor(step, index, stages, openDetails, conditionFields, recipientFields) {
+    const normalized = step || {};
+    const type = normalized.type || 'notification';
+    const name = normalized.name || '';
+    const order = index + 1;
+    const isBlockingStep = isWorkflowEditorBlockingType(type);
+    const waitingLabel = isBlockingStep ? (normalized.waitingLabel || workflowDefaultWaitingLabelTemplate()) : '';
+    const copyMode = workflowEmailCopyMode(normalized);
+    return `
+      <article class="workflow-editor-step" data-workflow-step>
+        <input type="hidden" data-step-field="followUpStage" value="${escapeHtml(normalized.followUpStage || '')}">
+        <div class="workflow-step-topline">
+          <button class="workflow-drag-handle" type="button" data-workflow-drag-handle draggable="true" title="Drag to reorder" aria-label="Drag step">Drag</button>
+          <span class="workflow-step-order" data-step-order>${escapeHtml(String(order))}</span>
+          <label class="field workflow-step-name">
+            <span>Step name</span>
+            <input type="text" data-step-field="name" value="${escapeHtml(name)}" required>
+          </label>
+          <label class="field workflow-step-type">
+            <span>Type</span>
+            <select data-step-field="type">
+              ${workflowStepTypeOptions(type)}
+            </select>
+          </label>
+          <div class="workflow-step-actions">
+            <button class="button secondary" type="button" data-move-workflow-step="up">Up</button>
+            <button class="button secondary" type="button" data-move-workflow-step="down">Down</button>
+            <button class="button danger" type="button" data-remove-workflow-step>Remove</button>
+          </div>
+        </div>
+        <p class="workflow-step-preview">${escapeHtml(workflowStepPreview(normalized))}</p>
+        <details class="workflow-step-details" ${openDetails ? 'open' : ''}>
+          <summary>Step settings</summary>
+          <div class="workflow-step-editor-body">
+            ${renderWorkflowRecipientControls(normalized, type, recipientFields || [])}
+            <details class="workflow-optional-panel" data-workflow-waiting-panel ${isBlockingStep ? '' : 'hidden'}>
+              <summary>Dashboard text</summary>
+              <div class="workflow-waiting-preview" data-workflow-waiting-preview>
+                ${escapeHtml(workflowWaitingLabelPreview(Object.assign({}, normalized, { waitingLabel })))}
+              </div>
+              <div class="workflow-step-grid">
+                <label class="field workflow-span-2">
+                  <span>Waiting message</span>
+                  <textarea rows="2" data-step-field="waitingLabel" required>${escapeHtml(waitingLabel)}</textarea>
+                </label>
+              </div>
+              <p class="workflow-condition-note">Use placeholders: {Step name}, {Step email}, {Action}, {Employee name}, {Employee email}, {Request ID}.</p>
+            </details>
+            <details class="workflow-optional-panel" data-workflow-copy-panel>
+              <summary>Email copy <span class="workflow-copy-mode">${escapeHtml(copyMode)}</span></summary>
+              ${renderWorkflowEmailCopyPreview(normalized)}
+              <div class="workflow-step-grid">
+                <label class="field">
+                  <span>Custom email heading</span>
+                  <input type="text" data-step-field="subject" value="${escapeHtml(normalized.subject || '')}" placeholder="${escapeHtml(normalized.defaultSubject || '')}">
+                </label>
+                <label class="field workflow-span-2">
+                  <span>Custom email message</span>
+                  <textarea rows="3" data-step-field="message" placeholder="${escapeHtml(normalized.defaultMessage || '')}">${escapeHtml(normalized.message || '')}</textarea>
+                </label>
+              </div>
+            </details>
+            <details class="workflow-optional-panel" data-workflow-conditions-panel>
+              <summary>Conditions</summary>
+              <div class="workflow-step-grid">
+                ${renderConditionBuilder('whenJson', 'Run when', normalized.whenJson || '', conditionFields || [])}
+                ${renderConditionBuilder('unlessJson', 'Skip when', normalized.unlessJson || '', conditionFields || [])}
+              </div>
+            </details>
+          </div>
+        </details>
+      </article>
+    `;
+  }
+
+  function renderWorkflowRecipientControls(step, type, recipientFields) {
+    const normalized = step || {};
+    const emails = Array.isArray(normalized.emails) ? normalized.emails.join('\n') : String(normalized.emails || '');
+    const emailFields = Array.isArray(normalized.emailFields) ? normalized.emailFields : splitWorkflowFieldList(normalized.emailFields || '');
+    const mode = workflowRecipientMode(normalized, type);
+    return `
+      <section class="workflow-recipient-section" data-workflow-recipient-section>
+        <div class="workflow-section-heading">
+          <div>
+            <h5>Recipient</h5>
+            <p class="muted" data-recipient-help>${escapeHtml(workflowRecipientHelp(type))}</p>
+          </div>
+        </div>
+        <div class="workflow-step-grid">
+          <label class="field workflow-recipient-mode">
+            <span>Send to</span>
+            <select data-recipient-mode>
+              ${workflowRecipientModeOptions(type, mode)}
+            </select>
+          </label>
+          <label class="field" data-recipient-panel data-recipient-modes="fixed-email advanced">
+            <span>Email address</span>
+            <input type="email" inputmode="email" autocomplete="off" data-step-field="email" value="${escapeHtml(normalized.email || '')}" placeholder="person@example.edu">
+          </label>
+          <label class="field" data-recipient-panel data-recipient-modes="request-field advanced">
+            <span>Request email field</span>
+            <select data-step-field="emailField" data-recipient-field>
+              ${workflowRecipientFieldOptions(recipientFields, normalized.emailField || '')}
+            </select>
+          </label>
+          <label class="field workflow-span-2" data-recipient-panel data-recipient-modes="fixed-emails advanced">
+            <span>Email addresses</span>
+            <textarea rows="3" data-step-field="emails" placeholder="one@example.edu">${escapeHtml(emails)}</textarea>
+          </label>
+          <label class="field workflow-span-2" data-recipient-panel data-recipient-modes="request-fields advanced">
+            <span>Request email fields</span>
+            <select multiple size="${Math.min(Math.max((recipientFields || []).length, 3), 6)}" data-step-field="emailFields" data-recipient-field>
+              ${workflowRecipientFieldOptions(recipientFields, emailFields)}
+            </select>
+          </label>
+        </div>
+      </section>
+    `;
+  }
+
+  function workflowRecipientFieldOptions(recipientFields, selected) {
+    const selectedList = Array.isArray(selected)
+      ? selected.map(item => String(item || '').trim()).filter(Boolean)
+      : [String(selected || '').trim()].filter(Boolean);
+    const selectedSet = selectedList.reduce((map, item) => {
+      map[item] = true;
+      return map;
+    }, {});
+    const fields = recipientFields && recipientFields.length
+      ? recipientFields
+      : [
+        { name: 'employeeEmail', label: 'Employee email' },
+        { name: 'requesterEmail', label: 'Requester email' },
+        { name: 'lineManagerEmail', label: 'Line manager email' }
+      ];
+    const list = selectedList
+      .filter(name => !fields.some(field => field.name === name))
+      .map(name => ({ name, label: name }))
+      .concat(fields);
+    return list.map(field => {
+      const label = field.group ? `${field.label || field.name} (${field.group})` : (field.label || field.name);
+      return `<option value="${escapeHtml(field.name)}" ${selectedSet[field.name] ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+  }
+
+  function workflowRecipientMode(step, type) {
+    const normalized = step || {};
+    const hasEmail = Boolean(normalized.email);
+    const hasEmailField = Boolean(normalized.emailField);
+    const hasEmails = Array.isArray(normalized.emails)
+      ? normalized.emails.length > 0
+      : Boolean(String(normalized.emails || '').trim());
+    const hasEmailFields = Array.isArray(normalized.emailFields)
+      ? normalized.emailFields.length > 0
+      : Boolean(String(normalized.emailFields || '').trim());
+    const sources = [hasEmail, hasEmailField, hasEmails, hasEmailFields].filter(Boolean).length;
+    if (sources > 1) {
+      return 'advanced';
+    }
+    if (hasEmailField) {
+      return 'request-field';
+    }
+    if (hasEmails) {
+      return 'fixed-emails';
+    }
+    if (hasEmailFields) {
+      return 'request-fields';
+    }
+    if (hasEmail) {
+      return 'fixed-email';
+    }
+    return normalizeWorkflowEditorStepType(type) === 'notification' ? 'fixed-emails' : 'request-field';
+  }
+
+  function workflowRecipientModeOptions(type, selected) {
+    const blocking = isWorkflowEditorBlockingType(type);
+    const options = [
+      ['fixed-email', 'One email address', true],
+      ['request-field', 'Email from request field', true],
+      ['fixed-emails', 'Multiple email addresses', !blocking],
+      ['request-fields', 'Multiple request fields', !blocking],
+      ['advanced', 'Advanced mixed recipients', !blocking || selected === 'advanced']
+    ];
+    return options
+      .filter(option => option[2] || option[0] === selected)
+      .map(option => `<option value="${option[0]}" ${option[0] === selected ? 'selected' : ''}>${escapeHtml(option[1])}</option>`)
+      .join('');
+  }
+
+  function workflowRecipientHelp(type) {
+    return isWorkflowEditorBlockingType(type)
+      ? 'This step waits for one person.'
+      : 'Notifications can go to one or more people.';
+  }
+
+  function normalizeWorkflowEditorStepType(type) {
+    const normalized = normalize(type || 'notification');
+    return ['approval', 'acknowledgement', 'action', 'notification'].indexOf(normalized) !== -1
+      ? normalized
+      : 'notification';
+  }
+
+  function isWorkflowEditorBlockingType(type) {
+    const normalized = normalizeWorkflowEditorStepType(type);
+    return normalized === 'approval' || normalized === 'acknowledgement' || normalized === 'action';
+  }
+
+  function workflowStepPreview(step) {
+    const recipients = [];
+    if (step.email) {
+      recipients.push(step.email);
+    }
+    if (step.emailField) {
+      recipients.push(step.emailField);
+    }
+    if (Array.isArray(step.emails) && step.emails.length) {
+      recipients.push(`${step.emails.length} fixed emails`);
+    }
+    if (Array.isArray(step.emailFields) && step.emailFields.length) {
+      recipients.push(`${step.emailFields.length} request fields`);
+    }
+    const parts = [`Recipients: ${recipients.length ? recipients.join(', ') : 'not set'}`];
+    const subject = step.effectiveSubject || step.subject || step.defaultSubject || '';
+    if (subject) {
+      parts.push(`Email: ${workflowEmailCopyMode(step)} - ${subject}`);
+    }
+    if (isWorkflowEditorBlockingType(step.type) && step.waitingLabel) {
+      parts.push('dashboard text set');
+    }
+    if (step.whenJson) {
+      parts.push('conditional');
+    }
+    if (step.unlessJson) {
+      parts.push('has skip rule');
+    }
+    if (step.followUpStage) {
+      parts.push(`starts ${step.followUpStage}`);
+    }
+    return parts.join(' | ');
+  }
+
+  function workflowDefaultWaitingLabelTemplate() {
+    return '{Step name} <{Step email}> to {Action}';
+  }
+
+  function workflowWaitingLabelPreview(step) {
+    const normalized = step || {};
+    const template = String(normalized.waitingLabel || '').trim();
+    if (!template) {
+      return 'Waiting message is required.';
+    }
+    return renderWorkflowWaitingLabelTemplate(template, {
+      'Step name': normalized.name || 'Workflow owner',
+      'Step email': workflowRecipientPreviewValue(normalized),
+      Action: workflowEditorActionVerb(normalized.type),
+      'Employee name': 'Alex Organiser',
+      'Employee email': 'organiser@example.edu',
+      'Request ID': 'OT-20260624-ABCDE'
+    });
+  }
+
+  function renderWorkflowWaitingLabelTemplate(template, values) {
+    return String(template || '').replace(/\{(Step name|Step email|Action|Employee name|Employee email|Request ID)\}/g, (match, key) => values[key] || '');
+  }
+
+  function workflowRecipientPreviewValue(step) {
+    if (step.email) {
+      return step.email;
+    }
+    if (step.emailField) {
+      return workflowSampleEmailForField(step.emailField);
+    }
+    if (Array.isArray(step.emails) && step.emails.length) {
+      return step.emails[0];
+    }
+    if (Array.isArray(step.emailFields) && step.emailFields.length) {
+      return workflowSampleEmailForField(step.emailFields[0]);
+    }
+    return 'recipient@example.edu';
+  }
+
+  function workflowSampleEmailForField(field) {
+    const samples = {
+      employeeEmail: 'organiser@example.edu',
+      lineManagerEmail: 'linemanager@example.edu',
+      requesterEmail: 'requester@example.edu'
+    };
+    return samples[field] || 'recipient@example.edu';
+  }
+
+  function workflowEditorActionVerb(type) {
+    const normalized = normalizeWorkflowEditorStepType(type);
+    if (normalized === 'acknowledgement') {
+      return 'acknowledge';
+    }
+    if (normalized === 'action') {
+      return 'complete action';
+    }
+    return 'approve';
+  }
+
+  function workflowEmailCopyMode(step) {
+    const mode = String((step && step.emailCopyMode) || '').trim().toLowerCase();
+    if (mode === 'custom') {
+      return 'custom';
+    }
+    if (mode === 'partial') {
+      return 'custom with defaults';
+    }
+    if (step && (step.subject || step.message) && (step.defaultSubject || step.defaultMessage)) {
+      return 'custom with defaults';
+    }
+    if (step && (step.subject || step.message)) {
+      return 'custom';
+    }
+    return 'default';
+  }
+
+  function renderWorkflowEmailCopyPreview(step) {
+    const normalized = step || {};
+    const subject = normalized.effectiveSubject || normalized.subject || normalized.defaultSubject || '';
+    const message = normalized.effectiveMessage || normalized.message || normalized.defaultMessage || '';
+    const subjectLine = normalized.effectiveSubjectLine || (subject ? `{Request ID}: ${subject.toLowerCase()}` : '');
+    const mode = workflowEmailCopyMode(normalized);
+    return `
+      <div class="workflow-email-preview" data-effective-email-copy>
+        <div class="workflow-email-preview-heading">
+          <strong>${escapeHtml(mode === 'default' ? 'Using generated default email copy' : 'Custom email copy active')}</strong>
+          <span>${escapeHtml(mode)}</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Outgoing subject</dt>
+            <dd>${escapeHtml(subjectLine || 'Not set')}</dd>
+          </div>
+          <div>
+            <dt>Message opening</dt>
+            <dd>${escapeHtml(message || 'Not set')}</dd>
+          </div>
+        </dl>
+      </div>
+    `;
+  }
+
+  function renderConditionBuilder(fieldName, label, jsonText, conditionFields) {
+    const parsed = workflowConditionRowsFromJson(jsonText);
+    return `
+      <fieldset class="workflow-condition-builder workflow-span-2" data-condition-builder="${escapeHtml(fieldName)}">
+        <legend>${escapeHtml(label)}</legend>
+        <textarea class="visually-hidden" tabindex="-1" data-step-field="${escapeHtml(fieldName)}" data-condition-raw>${escapeHtml(parsed.raw || jsonText || '')}</textarea>
+        <div class="workflow-condition-toolbar">
+          <label class="field">
+            <span>Match</span>
+            <select data-condition-mode>
+              <option value="all" ${parsed.mode === 'all' ? 'selected' : ''}>All conditions</option>
+              <option value="any" ${parsed.mode === 'any' ? 'selected' : ''}>Any condition</option>
+            </select>
+          </label>
+          <button class="button secondary" type="button" data-add-condition-row>Add condition</button>
+        </div>
+        ${parsed.raw ? '<p class="workflow-condition-note">This condition is preserved but cannot be shown as picker rows. Add a new condition to replace it.</p>' : ''}
+        <div class="workflow-condition-list" data-condition-row-list>
+          ${parsed.rows.map(row => renderConditionRow(row, conditionFields)).join('')}
+          <p class="admin-empty" data-condition-empty ${parsed.rows.length ? 'hidden' : ''}>No condition. This step always runs.</p>
+        </div>
+      </fieldset>
+    `;
+  }
+
+  function workflowConditionRowsFromJson(jsonText) {
+    const text = String(jsonText || '').trim();
+    if (!text) {
+      return { mode: 'all', rows: [], raw: '' };
+    }
+    try {
+      const parsed = JSON.parse(text);
+      let mode = 'all';
+      let conditions = [];
+      if (Array.isArray(parsed)) {
+        conditions = parsed;
+      } else if (parsed && Array.isArray(parsed.any)) {
+        mode = 'any';
+        conditions = parsed.any;
+      } else if (parsed && Array.isArray(parsed.all)) {
+        conditions = parsed.all;
+      } else if (parsed && typeof parsed === 'object') {
+        conditions = [parsed];
+      }
+      const rows = conditions.map(conditionRowFromObject).filter(Boolean);
+      if (rows.length !== conditions.length) {
+        return { mode, rows: [], raw: text };
+      }
+      return { mode, rows, raw: '' };
+    } catch (error) {
+      return { mode: 'all', rows: [], raw: text };
+    }
+  }
+
+  function conditionRowFromObject(condition) {
+    if (!condition || !condition.field) {
+      return null;
+    }
+    if (condition.exists !== undefined) {
+      return {
+        field: condition.field,
+        operator: condition.exists ? 'exists' : 'notExists',
+        value: ''
+      };
+    }
+    if (condition.notEquals !== undefined) {
+      return { field: condition.field, operator: 'notEquals', value: condition.notEquals };
+    }
+    if (condition.in !== undefined) {
+      return { field: condition.field, operator: 'in', value: [].concat(condition.in).join(', ') };
+    }
+    if (condition.notIn !== undefined) {
+      return { field: condition.field, operator: 'notIn', value: [].concat(condition.notIn).join(', ') };
+    }
+    if (condition.equals !== undefined) {
+      return { field: condition.field, operator: 'equals', value: condition.equals };
+    }
+    if (condition.is !== undefined) {
+      return { field: condition.field, operator: 'equals', value: condition.is };
+    }
+    if (condition.value !== undefined) {
+      return { field: condition.field, operator: 'equals', value: condition.value };
+    }
+    return { field: condition.field, operator: 'exists', value: '' };
+  }
+
+  function renderConditionRow(row, conditionFields) {
+    const selectedField = row && row.field ? row.field : '';
+    const operator = row && row.operator ? row.operator : 'equals';
+    return `
+      <div class="workflow-condition-row" data-condition-row>
+        <label class="field">
+          <span>Field</span>
+          <select data-condition-field>
+            ${conditionFieldOptions(conditionFields, selectedField)}
+          </select>
+        </label>
+        <label class="field">
+          <span>Operator</span>
+          <select data-condition-operator>
+            ${conditionOperatorOptions(operator)}
+          </select>
+        </label>
+        <label class="field" data-condition-value-wrap>
+          ${conditionValueControl(selectedField, operator, row ? row.value : '', conditionFields)}
+        </label>
+        <button class="button secondary" type="button" data-remove-condition-row>Remove</button>
+      </div>
+    `;
+  }
+
+  function conditionFieldOptions(conditionFields, selected) {
+    const fields = conditionFields && conditionFields.length
+      ? conditionFields
+      : [{ name: selected || 'requesterEmail', label: selected || 'requesterEmail', options: [] }];
+    const hasSelected = !selected || fields.some(field => field.name === selected);
+    const list = hasSelected ? fields : [{ name: selected, label: selected, options: [] }].concat(fields);
+    return list.map(field => {
+      const values = JSON.stringify(field.options || []);
+      const label = field.group ? `${field.label || field.name} (${field.group})` : (field.label || field.name);
+      return `<option value="${escapeHtml(field.name)}" data-values="${escapeHtml(values)}" ${field.name === selected ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+  }
+
+  function conditionOperatorOptions(selected) {
+    const options = [
+      ['equals', 'Equals'],
+      ['notEquals', 'Does not equal'],
+      ['in', 'Is one of'],
+      ['notIn', 'Is not one of'],
+      ['exists', 'Has any value'],
+      ['notExists', 'Is blank']
+    ];
+    return options.map(([value, label]) => {
+      return `<option value="${value}" ${value === selected ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+  }
+
+  function conditionValueControl(fieldName, operator, value, conditionFields) {
+    const values = conditionFieldValues(fieldName, conditionFields);
+    const needsValue = ['equals', 'notEquals', 'in', 'notIn'].indexOf(operator) !== -1;
+    if (!needsValue) {
+      return `
+        <span>Value</span>
+        <input type="text" data-condition-value value="" disabled placeholder="No value needed">
+      `;
+    }
+    if (values.length && (operator === 'equals' || operator === 'notEquals')) {
+      return `
+        <span>Value</span>
+        <select data-condition-value>
+          <option value=""></option>
+          ${values.map(option => `<option value="${escapeHtml(option)}" ${String(value) === String(option) ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
+        </select>
+      `;
+    }
+    if (values.length && (operator === 'in' || operator === 'notIn')) {
+      const selectedValues = splitWorkflowList(value);
+      return `
+        <span>Values</span>
+        <select multiple size="${Math.min(Math.max(values.length, 2), 5)}" data-condition-value>
+          ${values.map(option => `<option value="${escapeHtml(option)}" ${selectedValues.indexOf(normalize(option)) !== -1 ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
+        </select>
+      `;
+    }
+    return `
+      <span>${operator === 'in' || operator === 'notIn' ? 'Values' : 'Value'}</span>
+      <input type="text" data-condition-value value="${escapeHtml(value || '')}" ${operator === 'in' || operator === 'notIn' ? 'placeholder="Value one, value two"' : ''}>
+    `;
+  }
+
+  function conditionFieldValues(fieldName, conditionFields) {
+    const field = (conditionFields || []).find(item => item.name === fieldName);
+    return field && Array.isArray(field.options) ? field.options : [];
+  }
+
+  function workflowStepTypeOptions(selected) {
+    return ['approval', 'acknowledgement', 'action', 'notification'].map(type => {
+      return `<option value="${type}" ${type === selected ? 'selected' : ''}>${escapeHtml(workflowStepTypeLabel(type))}</option>`;
+    }).join('');
+  }
+
+  function workflowStepTypeLabel(type) {
+    const labels = {
+      approval: 'Approval',
+      acknowledgement: 'Acknowledgement',
+      action: 'Action',
+      notification: 'Notification'
+    };
+    return labels[type] || type;
+  }
+
+  function workflowStageLabelFromKey(key, stages) {
+    const stage = (stages || []).find(item => item.key === key);
+    if (stage) {
+      return stage.label || stage.key;
+    }
+    if (key === 'final') {
+      return 'Final approval';
+    }
+    if (key === 'checklist') {
+      return 'Checklist completion';
+    }
+    return key;
+  }
+
+  function workflowStageHelp(stage) {
+    if (stage === 'approval') {
+      return 'Runs after the initial request is submitted.';
+    }
+    if (stage === 'final') {
+      return 'Runs after actual hours are submitted.';
+    }
+    if (stage === 'checklist') {
+      return 'Runs when the post-approval checklist is completed.';
+    }
+    return 'Runs when this workflow stage is started.';
+  }
+
+  function renderAdminDashboardContext(data) {
+    const selectedName = data.selectedProcessName || data.selectedProcess || 'Admin section';
+    const selectedKey = data.selectedProcess || '';
+    const exportHref = selectedKey ? `/admin/export/${encodeURIComponent(selectedKey)}.xlsx` : '';
+    return `
+      <div class="dashboard-context">
+        <div class="dashboard-context-copy">
+          <span>Admin dashboard</span>
+          <strong>${escapeHtml(selectedName)}</strong>
+          ${selectedKey ? `<em>${escapeHtml(selectedKey)}</em>` : ''}
+        </div>
+        <div class="dashboard-context-actions">
+          ${exportHref ? `<a class="button primary" href="${escapeHtml(exportHref)}" data-admin-export download>Download Excel</a>` : ''}
+          <a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'admin' }))}" data-admin-process-chooser>Change form</a>
+        </div>
+      </div>
+      ${renderAdminDatabaseStatus(data)}
+    `;
+  }
+
+  function renderAdminDatabaseStatus(data) {
+    const database = data && data.database ? data.database : {};
+    if (!database.spreadsheetId) {
+      return '';
+    }
+    const expected = database.configuredSpreadsheetId || '';
+    const mismatch = Boolean(expected && database.spreadsheetId !== expected);
+    const sheetSummary = (database.sheets || [])
+      .map(sheet => `${sheet.name}: ${sheet.rows}`)
+      .join(', ');
+    const performance = data && data.performance ? data.performance : {};
+    const performanceSummary = performance.totalMs !== undefined
+      ? `${formatDuration(performance.totalMs)} server`
+      : '';
+    const slowestPhase = Array.isArray(performance.phases) && performance.phases.length
+      ? performance.phases.slice().sort((a, b) => Number(b.durationMs || 0) - Number(a.durationMs || 0))[0]
+      : null;
+    const slowestSummary = slowestPhase
+      ? `${slowestPhase.label}: ${formatDuration(slowestPhase.durationMs)}`
+      : '';
+    const summaryLabel = mismatch ? 'System details - attention needed' : 'System details';
+    return `
+      <details class="database-status ${mismatch ? 'warning' : ''}">
+        <summary>${escapeHtml(summaryLabel)}</summary>
+        <div class="database-status-content">
+          <strong>Database</strong>
+          <span>${escapeHtml(database.spreadsheetId)}</span>
+          <span>${escapeHtml(database.source || '')}</span>
+          ${database.appVersion ? `<span>${escapeHtml(database.appVersion)}</span>` : ''}
+          ${performanceSummary ? `<span>${escapeHtml(performanceSummary)}</span>` : ''}
+          ${slowestSummary ? `<span>${escapeHtml(slowestSummary)}</span>` : ''}
+          ${sheetSummary ? `<small>${escapeHtml(sheetSummary)}</small>` : ''}
+          ${mismatch ? '<em>Configured spreadsheet ID does not match the spreadsheet being read.</em>' : ''}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderDashboardFilter(total) {
+    return `
+      <div class="dashboard-filter">
+        <label class="field">
+          <span>Filter requests</span>
+          <input type="search" data-dashboard-filter placeholder="Search by employee, email, request ID, status, or waiting on">
+        </label>
+        <div class="dashboard-filter-meta">
+          <span data-dashboard-filter-count>${escapeHtml(String(total))} requests</span>
+          <button class="button secondary" type="button" data-dashboard-filter-clear hidden>Clear filter</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderRequestSection(title, requests, role, options) {
+    const sectionOptions = options || {};
+    if (!requests.length) {
+      if (sectionOptions.collapsible) {
+        return `
+          <details class="dashboard-section" data-request-section ${sectionOptions.open ? 'open' : ''}>
+            <summary>
+              <div>
+                <h3>${escapeHtml(title)}</h3>
+                <span class="request-meta"><span data-section-visible-count>0</span> requests</span>
+              </div>
+              <span class="dashboard-section-toggle"></span>
+            </summary>
+            <div class="dashboard-section-body">
+              <p class="muted">No requests in this section.</p>
+            </div>
+          </details>
+        `;
+      }
+      return `
+        <div class="stack">
+          <h3>${escapeHtml(title)}</h3>
+          <p class="muted">No requests in this section.</p>
+        </div>
+      `;
+    }
+
+    if (sectionOptions.collapsible) {
+      return `
+        <details class="dashboard-section" data-request-section ${sectionOptions.open ? 'open' : ''}>
+          <summary>
+            <div>
+              <h3>${escapeHtml(title)}</h3>
+              <span class="request-meta"><span data-section-visible-count>${escapeHtml(String(requests.length))}</span> requests</span>
+            </div>
+            <span class="dashboard-section-toggle"></span>
+          </summary>
+          <div class="dashboard-section-body">
+            <div class="request-list">
+              ${requests.map(request => renderDashboardRequest(request, role, false)).join('')}
+            </div>
+            <p class="muted hidden" data-section-empty>No matching requests in this section.</p>
+          </div>
+        </details>
+      `;
+    }
+
+    return `
+      <div class="stack">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="request-list">
+          ${requests.map(request => renderDashboardRequest(request, role, false)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderDashboardRequest(request, role, open) {
+    const includeActual = request.processType === 'overtime' && Boolean(request.actualSubmittedAt || request.actualHours || request.status === 'PENDING_FINAL_APPROVAL' || request.status === 'FINAL_APPROVED' || request.status === 'FINAL_DENIED');
+    const badgeClass = request.statusTone || (request.isStopped ? 'stopped' : (request.isClosed ? 'closed' : 'pending'));
+    const itemClass = request.isStopped ? ' stopped' : '';
+    const requestHtml = `
+      <details class="request-item${itemClass}" ${open ? 'open' : ''}>
+        <summary class="${role === 'admin' ? 'admin-summary' : ''}">
+          <div class="request-summary-id">
+            <div class="request-title">${escapeHtml(request.requestId)}</div>
+            <div class="request-meta">${escapeHtml(request.processName || request.processType || 'Request')}</div>
+            <div class="request-meta">Date: ${escapeHtml(requestDisplayDateLabel(request))}</div>
+          </div>
+          <div class="request-summary-person">
+            <div>${escapeHtml(request.employeeName || '')}</div>
+            <div class="request-meta">${escapeHtml(request.employeeEmail || '')}</div>
+          </div>
+          <div class="request-summary-status">
+            <span class="badge ${badgeClass}">${escapeHtml(request.statusLabel || request.status || '')}</span>
+          </div>
+          <div class="request-summary-waiting">
+            <div class="request-meta">Waiting on</div>
+            <div>${escapeHtml(request.waitingOnLabel || 'No action required')}</div>
+          </div>
+          ${role === 'admin' ? renderAdminButtonRow(request) : ''}
+        </summary>
+        <div class="request-body">
+          ${renderRequestSummary(request, includeActual)}
+          ${role === 'admin' ? renderAdminWorkflow(request) : renderHistory(request)}
+          ${role === 'admin' ? '' : renderDashboardRequestActions(request, role)}
+        </div>
+      </details>
+    `;
+    if (role === 'admin' || role === 'approver') {
+      return `
+        <div class="request-shell" data-dashboard-request data-search="${escapeHtml(dashboardRequestSearchText(request))}">
+          ${requestHtml}
+          ${role === 'admin' ? renderDashboardRequestActions(request, role) : ''}
+        </div>
+      `;
+    }
+    return requestHtml;
+  }
+
+  function dashboardRequestSearchText(request) {
+    return [
+      request.requestId,
+      request.processType,
+      request.processName,
+      request.createdAt,
+      request.employeeName,
+      request.employeeEmail,
+      request.lineManagerEmail,
+      request.requesterEmail,
+      request.reason,
+      request.overtimeDate,
+      request.eventName,
+      request.eventDate,
+      request.eventStartDate,
+      request.eventEndDate,
+      request.schoolArea,
+      request.eventType,
+      request.eventLocation,
+      request.eventStartTime,
+      request.eventFinishTime,
+      request.eventTimes,
+      request.studentsInvolved,
+      request.staffRequired,
+      request.status,
+      request.statusLabel,
+      request.waitingOnLabel,
+      request.activeApprovalStage,
+      request.activeApprovalStepName,
+      request.activeApprovalStepEmail,
+      request.plannedHours,
+      request.actualHours,
+      request.compensationMethod
+    ].join(' ').toLowerCase();
+  }
+
+  function renderDashboardRequestActions(request, role) {
+    if (role === 'approver' && request.canApprove) {
+      const primaryDecision = request.primaryDecision || request.activeWorkflowPrimaryDecision || 'approve';
+      const primaryLabel = request.primaryActionLabel || request.activeWorkflowPrimaryActionLabel || 'Approve';
+      return `
+        <form class="dashboard-approval stack" data-request-id="${escapeHtml(request.requestId)}">
+          <label class="field full">
+            <span>Comment</span>
+            <textarea name="comment"></textarea>
+          </label>
+          <div class="actions inline">
+            ${request.canDeny ? '<button class="button danger" type="button" data-dashboard-decision="deny">Deny</button>' : ''}
+            ${request.canRequestChanges === false ? '' : '<button class="button secondary" type="button" data-dashboard-decision="changes">Request changes</button>'}
+            <button class="button primary" type="button" data-dashboard-decision="${escapeHtml(primaryDecision)}">${escapeHtml(primaryLabel)}</button>
+          </div>
+        </form>
+      `;
+    }
+
+    if (role === 'requester') {
+      const actions = [];
+      if (request.canEditApproval) {
+        actions.push(`<a class="button secondary" href="${escapeHtml(appUrl('edit', { requestId: request.requestId }))}">Edit request</a>`);
+      }
+      if (request.canEditActual) {
+        actions.push(`<a class="button secondary" href="${escapeHtml(appUrl('actual', { requestId: request.requestId }))}">Edit actual hours</a>`);
+      }
+      if (request.canEditChecklist) {
+        actions.push(`<a class="button secondary" href="${escapeHtml(appUrl('checklist', { requestId: request.requestId }))}">Edit checklist</a>`);
+      }
+      if (request.canCancel) {
+        actions.push(`<button class="button danger" type="button" data-requester-cancel="${escapeHtml(request.requestId)}">Cancel request</button>`);
+      }
+      return actions.length ? `<div class="actions inline">${actions.join('')}</div>` : '';
+    }
+
+    if (role === 'admin') {
+      return renderAdminActions(request);
+    }
+
+    return '';
+  }
+
+  function renderAdminActions(request) {
+    if (!request.canReassign) {
+      return '';
+    }
+    return `
+      <div class="admin-action-panel hidden">
+        ${request.canReassign ? renderReassignForm(request) : ''}
+      </div>
+    `;
+  }
+
+  function renderAdminButtonRow(request) {
+    const requestId = escapeHtml(request.requestId);
+    const hasActiveStep = Boolean(request.activeApprovalStage && request.activeApprovalStepEmail);
+    const reminderTitle = request.canRemind ? 'Send a fresh email for the current pending action.' : 'No reminder is available for this request status.';
+    const workflowTitle = hasActiveStep ? `Current step: ${request.activeApprovalStepName || request.activeApprovalStepEmail}` : 'This request is not waiting on a workflow step.';
+    const cancelTitle = request.canAdminCancel ? 'Cancel this in-process request and stop the workflow.' : 'This request is not currently in process.';
+    return `
+      <div class="admin-summary-actions">
+        <button class="button secondary" type="button" data-admin-reminder="${requestId}" ${request.canRemind ? '' : 'disabled'} title="${escapeHtml(reminderTitle)}">Send reminder email</button>
+        <button class="button secondary" type="button" data-admin-panel-trigger="${requestId}" data-admin-panel-name="redirect" ${request.canReassign ? '' : 'disabled'} title="${escapeHtml(workflowTitle)}">Reassign step</button>
+        <button class="button danger" type="button" data-admin-cancel="${requestId}" ${request.canAdminCancel ? '' : 'disabled'} title="${escapeHtml(cancelTitle)}">Cancel request</button>
+      </div>
+    `;
+  }
+
+  function renderAdminWorkflow(request) {
+    const isActualHoursProcess = request.completionMode === 'actual_hours';
+    const approval = renderWorkflowStage(
+      isActualHoursProcess ? 'Pre-approval workflow' : 'Approval workflow',
+      'approval',
+      request.approvalWorkflowSteps || [],
+      request.approvalHistory || [],
+      request
+    );
+    const final = isActualHoursProcess ? renderWorkflowStage(
+        'Actual-hours workflow',
+        'final',
+        request.finalWorkflowSteps || [],
+        request.finalApprovalHistory || [],
+        request
+      ) : '';
+    const changes = renderChangeRequests(request.changeHistory || []);
+    return `
+      <div class="workflow-timeline">
+        <h3>Approval History</h3>
+        ${approval}
+        ${final}
+        ${changes}
+      </div>
+    `;
+  }
+
+  function renderWorkflowStage(title, stage, steps, history, request) {
+    const activeIndex = Number(request.activeApprovalStepIndex);
+    const isActiveStage = request.activeApprovalStage === stage;
+    const rows = steps.length
+      ? steps.map(step => renderWorkflowStep(step, stage, history, request, isActiveStage && activeIndex === Number(step.index))).join('')
+      : '<p class="muted">No configured steps for this stage.</p>';
+    const unmatched = history.filter(entry => !workflowEntryMatchesAnyStep(entry, steps));
+    return `
+      <div class="workflow-stage">
+        <h4>${escapeHtml(title)}</h4>
+        <div class="workflow-step-list">
+          ${rows}
+          ${unmatched.map(entry => renderWorkflowHistoryOnly(entry)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderWorkflowStep(step, stage, history, request, isActive) {
+    const entries = history.filter(entry => workflowEntryMatchesStep(entry, step));
+    const status = workflowStepStatus(step, entries, request, stage, isActive);
+    const recipient = step.type === 'notification'
+      ? (step.emails || []).join(', ')
+      : step.email;
+    return `
+      <div class="workflow-step ${status.className}">
+        <div>
+          <strong>${escapeHtml(step.name || 'Workflow step')}</strong>
+          <span>${escapeHtml(step.type || 'approval')} | ${escapeHtml(recipient || '')}</span>
+        </div>
+        <div>
+          <span class="badge ${status.badge}">${escapeHtml(status.label)}</span>
+          ${step.error ? `<p class="workflow-entry">${escapeHtml(step.error)}</p>` : ''}
+          ${entries.map(entry => renderWorkflowEntry(entry)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function workflowStepStatus(step, entries, request, stage, isActive) {
+    if (isActive) {
+      return { label: `Waiting on ${request.activeApprovalStepName || step.name}`, badge: 'pending', className: 'active' };
+    }
+    const latest = entries[entries.length - 1];
+    if (latest) {
+      const decision = String(latest.decision || '').toLowerCase();
+      if (decision.indexOf('change') !== -1) {
+        return { label: 'Changes requested', badge: 'pending', className: 'attention' };
+      }
+      if (decision.indexOf('skip') !== -1) {
+        return { label: 'Skipped', badge: 'closed', className: 'muted-step' };
+      }
+      if (decision.indexOf('deny') !== -1) {
+        return { label: 'Denied', badge: 'stopped', className: 'stopped' };
+      }
+      if (step.type === 'notification') {
+        return { label: 'Sent', badge: 'closed', className: 'complete' };
+      }
+      return { label: latest.decision || 'Completed', badge: 'closed', className: 'complete' };
+    }
+    if (step.type === 'notification') {
+      return { label: 'Notification step', badge: 'closed', className: 'muted-step' };
+    }
+    if (step.type === 'configuration') {
+      return { label: 'Config issue', badge: 'stopped', className: 'stopped' };
+    }
+    return { label: 'Not reached', badge: 'closed', className: 'muted-step' };
+  }
+
+  function renderWorkflowEntry(entry) {
+    const who = entry.adminEmail
+      ? `${entry.adminEmail} for ${entry.approverEmail || ''}`
+      : entry.approverEmail || '';
+    const recipients = Array.isArray(entry.recipients) && entry.recipients.length
+      ? entry.recipients.join(', ')
+      : '';
+    return `
+      <p class="workflow-entry">
+        ${escapeHtml(formatDateTime(entry.at))}: ${escapeHtml(entry.decision || '')}${who ? ` by ${escapeHtml(who)}` : ''}${recipients ? ` to ${escapeHtml(recipients)}` : ''}${entry.comment ? ` - ${escapeHtml(entry.comment)}` : ''}
+      </p>
+    `;
+  }
+
+  function renderWorkflowHistoryOnly(entry) {
+    return `
+      <div class="workflow-step muted-step">
+        <div>
+          <strong>${escapeHtml(entry.stepName || 'Approval history')}</strong>
+          <span>${escapeHtml(entry.stepType || 'approval')} | ${escapeHtml(entry.approverEmail || '')}</span>
+        </div>
+        <div>
+          <span class="badge closed">History</span>
+          ${renderWorkflowEntry(entry)}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderChangeRequests(changeHistory) {
+    const entries = visibleChangeHistoryEntries(changeHistory);
+    if (!entries.length) {
+      return '';
+    }
+      return `
+      <div class="workflow-stage">
+        <h4>Adjustments</h4>
+        <div class="history">
+          ${entries.map(entry => renderChangeHistoryEntry(entry)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function visibleChangeHistoryEntries(changeHistory) {
+    return (changeHistory || []).filter(entry => entry.type !== 'change_request');
+  }
+
+  function renderChangeHistoryEntry(entry) {
+    const stageLabel = entry.stage === 'actual' ? 'Actual hours' : 'Request details';
+    if (entry.type === 'adjustment') {
+      const requestedWho = entry.requestedByEmail ? `${entry.requestedByName || entry.requestedByEmail} (${entry.requestedByEmail})` : entry.requestedByName || '';
+      const editedWho = entry.editedByEmail ? `${entry.editedByName || entry.editedByEmail} (${entry.editedByEmail})` : entry.editedByName || '';
+      return `
+        <div class="history-entry">
+          <p><strong>${escapeHtml(formatDateTime(entry.at))}: ${escapeHtml(stageLabel)} updated</strong></p>
+          ${requestedWho ? `<p>${entry.requestedByRole === 'approver' ? 'Change requested by' : 'Change started by'} ${escapeHtml(requestedWho)}.</p>` : ''}
+          ${editedWho ? `<p>Updated by ${escapeHtml(editedWho)}.</p>` : ''}
+          ${entry.comment ? `<p><strong>Adjustment comment:</strong> ${escapeHtml(entry.comment)}</p>` : ''}
+          ${renderAdjustmentFieldChanges(entry.fields || [])}
+        </div>
+      `;
+    }
+
+    const requestedWho = entry.requestedByEmail ? `${entry.requestedByName || entry.requestedByEmail} (${entry.requestedByEmail})` : entry.requestedByName || 'Reviewer';
+    return `
+      <div class="history-entry">
+        <p><strong>${escapeHtml(formatDateTime(entry.at))}: ${escapeHtml(stageLabel)} changes requested</strong></p>
+        <p>Requested by ${escapeHtml(requestedWho)}${entry.comment ? ` - ${escapeHtml(entry.comment)}` : ''}</p>
+      </div>
+    `;
+  }
+
+  function renderAdjustmentFieldChanges(fields) {
+    if (!fields.length) {
+      return '<p class="workflow-entry">No field values changed.</p>';
+    }
+    return `
+      <ul class="history-field-list">
+        ${fields.map(field => `<li><strong>${escapeHtml(field.label || field.field || 'Field')}:</strong> ${escapeHtml(displayHistoryValue(field.from))} -> ${escapeHtml(displayHistoryValue(field.to))}</li>`).join('')}
+      </ul>
+    `;
+  }
+
+  function displayHistoryValue(value) {
+    const text = String(value === null || value === undefined ? '' : value);
+    return text ? `"${text}"` : '(blank)';
+  }
+
+  function workflowEntryMatchesAnyStep(entry, steps) {
+    return steps.some(step => workflowEntryMatchesStep(entry, step));
+  }
+
+  function workflowEntryMatchesStep(entry, step) {
+    const entryStepName = normalize(entry.stepName);
+    if (entryStepName) {
+      return entryStepName === normalize(step.name);
+    }
+    return normalize(entry.approverEmail) === normalize(step.email);
+  }
+
+  function normalize(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function renderReassignForm(request) {
+    return `
+      <form class="admin-reassign admin-action-grid hidden" data-admin-panel="redirect" data-request-id="${escapeHtml(request.requestId)}">
+        <label class="field">
+          <span>New action owner name</span>
+          <input name="newApproverName" type="text" value="${escapeHtml(request.activeApprovalStepName || '')}">
+        </label>
+        <label class="field">
+          <span>New action owner email</span>
+          <input name="newApproverEmail" type="email" required value="${escapeHtml(request.activeApprovalStepEmail || '')}">
+        </label>
+        <button class="button primary" type="submit">Redirect step</button>
+      </form>
+    `;
+  }
+
+  function bindDashboardActions() {
+    bindAdminSubmenu();
+    bindAdminProcessNavigation();
+    bindDashboardFilter();
+    bindAdminUserManagement();
+    bindAdminWorkflowManagement();
+
+    document.querySelectorAll('[data-dashboard-decision]').forEach(button => {
+      button.addEventListener('click', event => {
+        const form = event.currentTarget.closest('form');
+        const data = collectForm(form);
+        data.requestId = form.dataset.requestId;
+        data.decision = event.currentTarget.dataset.dashboardDecision;
+        data.email = dashboardState.email;
+        submitWithContainer(form, 'submitDashboardApprovalDecision', data, result => {
+          showNotice(result.message, 'success');
+          loadDashboard();
+        });
+      });
+    });
+
+    document.querySelectorAll('[data-requester-cancel]').forEach(button => {
+      button.addEventListener('click', event => {
+        const requestId = event.currentTarget.dataset.requesterCancel;
+        if (!window.confirm(`Cancel request ${requestId}?`)) {
+          return;
+        }
+        submitWithContainer(event.currentTarget.closest('.request-body'), 'requesterCancelRequest', {
+          requestId,
+          email: dashboardState.email
+        }, result => {
+          showNotice(result.message, 'success');
+          loadDashboard();
+        });
+      });
+    });
+
+    document.querySelectorAll('[data-admin-reminder]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const requestId = event.currentTarget.dataset.adminReminder;
+        submitWithContainer(event.currentTarget.closest('.request-shell') || event.currentTarget.closest('.admin-action-panel') || event.currentTarget.closest('.request-body'), 'adminSendReminder', {
+          requestId,
+          email: dashboardState.email
+        }, result => {
+          showNotice(result.message, 'success');
+          loadDashboard();
+        });
+      });
+    });
+
+    document.querySelectorAll('[data-admin-cancel]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const requestId = event.currentTarget.dataset.adminCancel;
+        if (!window.confirm(`Cancel request ${requestId}? This will stop the workflow and invalidate outstanding links.`)) {
+          return;
+        }
+        submitWithContainer(event.currentTarget.closest('.request-shell') || event.currentTarget.closest('.request-body'), 'adminCancelRequest', {
+          requestId,
+          email: dashboardState.email
+        }, result => {
+          showNotice(result.message, 'success');
+          loadDashboard();
+        });
+      });
+    });
+
+    document.querySelectorAll('[data-admin-panel-trigger]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const panelName = event.currentTarget.dataset.adminPanelName;
+        const shell = event.currentTarget.closest('.request-shell');
+        const panel = shell ? shell.querySelector('.admin-action-panel') : event.currentTarget.closest('.admin-action-panel');
+        if (!panel) {
+          return;
+        }
+        const target = panel.querySelector(`[data-admin-panel="${panelName}"]`);
+        if (!target) {
+          return;
+        }
+        const shouldOpen = target.classList.contains('hidden');
+        panel.querySelectorAll('[data-admin-panel]').forEach(element => {
+          element.classList.add('hidden');
+        });
+        if (shouldOpen) {
+          panel.classList.remove('hidden');
+          target.classList.remove('hidden');
+        } else {
+          panel.classList.add('hidden');
+        }
+      });
+    });
+
+    document.querySelectorAll('.admin-reassign').forEach(form => {
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        const data = collectForm(form);
+        data.requestId = form.dataset.requestId;
+        data.email = dashboardState.email;
+        submitWithContainer(form, 'adminReassignRequest', data, result => {
+          showNotice(result.message, 'success');
+          loadDashboard();
+        });
+      });
+    });
+  }
+
+  function bindAdminSubmenu() {
+    document.querySelectorAll('[data-admin-view]').forEach(button => {
+      button.addEventListener('click', event => {
+        dashboardState.adminView = event.currentTarget.dataset.adminView || 'forms';
+        const body = document.getElementById('dashboard-body');
+        if (!body || !dashboardState.data) {
+          return;
+        }
+        body.innerHTML = renderDashboardData(dashboardState.data);
+        bindDashboardActions();
+        updateAdminViewUrl();
+      });
+    });
+  }
+
+  function bindAdminUserManagement() {
+    document.querySelectorAll('[data-admin-user-form]').forEach(form => {
+      form.addEventListener('click', event => {
+        const addButton = event.target.closest('[data-add-admin-email]');
+        if (addButton) {
+          addAdminEmailFromControl(form, addButton);
+          return;
+        }
+
+        const removeButton = event.target.closest('[data-remove-admin-email]');
+        if (removeButton) {
+          removeAdminEmailRow(form, removeButton);
+        }
+      });
+
+      form.querySelectorAll('[data-admin-email-input]').forEach(input => {
+        input.addEventListener('keydown', event => {
+          if (event.key !== 'Enter') {
+            return;
+          }
+          event.preventDefault();
+          const group = input.closest('[data-admin-add-panel]') || input.closest('[data-admin-access-group]') || input.closest('tr');
+          const addButton = group ? group.querySelector('[data-add-admin-email]') : null;
+          if (addButton) {
+            addAdminEmailFromControl(form, addButton);
+          }
+        });
+      });
+
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        if (!flushPendingAdminEmailInputs(form)) {
+          return;
+        }
+        const data = collectAdminUserSettings(form);
+        submitWithContainer(form, 'updateAdminUserSettings', data, result => {
+          showNotice(result.message || 'User access has been updated.', 'success');
+          if (dashboardState.data) {
+            dashboardState.data.userManagement = result.userManagement || dashboardState.data.userManagement;
+            dashboardState.data.roleAvailability = result.roleAvailability || dashboardState.data.roleAvailability;
+            dashboardState.data.canManageUsers = Boolean(result.userManagement);
+          }
+          dashboardState.roleAvailability = normalizeRoleAvailability(result.roleAvailability || dashboardState.roleAvailability);
+          applyTopNavRoleVisibility();
+          const body = document.getElementById('dashboard-body');
+          if (body && dashboardState.data) {
+            body.innerHTML = renderDashboardData(dashboardState.data);
+            bindDashboardActions();
+          }
+        });
+      });
+    });
+  }
+
+  function bindAdminWorkflowManagement() {
+    document.querySelectorAll('[data-admin-workflow-form]').forEach(form => {
+      if (form.dataset.workflowBound === 'true') {
+        return;
+      }
+      form.dataset.workflowBound = 'true';
+
+      form.addEventListener('input', event => {
+        const stepField = event.target.closest('[data-step-field]');
+        if (stepField) {
+          updateWorkflowWaitingPreview(stepField.closest('[data-workflow-step]'));
+        }
+      });
+
+      form.addEventListener('change', event => {
+        const processSelect = event.target.closest('[data-workflow-process-select]');
+        if (processSelect) {
+          dashboardState.workflowProcess = processSelect.value || '';
+          dashboardState.workflowStage = '';
+          rerenderAdminLanding();
+          return;
+        }
+
+        const stepType = event.target.closest('[data-step-field="type"]');
+        if (stepType) {
+          const step = stepType.closest('[data-workflow-step]');
+          refreshWorkflowRecipientModeOptions(step);
+          updateWorkflowStepVisibility(step);
+          updateWorkflowWaitingPreview(step);
+          return;
+        }
+
+        const recipientMode = event.target.closest('[data-recipient-mode]');
+        if (recipientMode) {
+          const step = recipientMode.closest('[data-workflow-step]');
+          updateWorkflowStepVisibility(step);
+          updateWorkflowWaitingPreview(step);
+          return;
+        }
+
+        const stepField = event.target.closest('[data-step-field]');
+        if (stepField) {
+          updateWorkflowWaitingPreview(stepField.closest('[data-workflow-step]'));
+        }
+
+        const conditionControl = event.target.closest('[data-condition-field], [data-condition-operator]');
+        if (conditionControl) {
+          const row = conditionControl.closest('[data-condition-row]');
+          updateConditionValueControl(row);
+        }
+      });
+
+      form.addEventListener('click', event => {
+        const stageTab = event.target.closest('[data-workflow-stage-tab]');
+        if (stageTab) {
+          event.preventDefault();
+          setWorkflowStage(form, stageTab.dataset.workflowStageTab || '');
+          return;
+        }
+
+        const addButton = event.target.closest('[data-add-workflow-step]');
+        if (addButton) {
+          event.preventDefault();
+          addWorkflowStep(form, addButton.dataset.stageKey || dashboardState.workflowStage);
+          return;
+        }
+
+        const removeButton = event.target.closest('[data-remove-workflow-step]');
+        if (removeButton) {
+          event.preventDefault();
+          const step = removeButton.closest('[data-workflow-step]');
+          const list = step ? step.closest('[data-workflow-step-list]') : null;
+          if (step) {
+            step.remove();
+          }
+          updateWorkflowStepListState(list);
+          return;
+        }
+
+        const moveButton = event.target.closest('[data-move-workflow-step]');
+        if (moveButton) {
+          event.preventDefault();
+          moveWorkflowStep(moveButton.closest('[data-workflow-step]'), moveButton.dataset.moveWorkflowStep);
+          return;
+        }
+
+        const addConditionButton = event.target.closest('[data-add-condition-row]');
+        if (addConditionButton) {
+          event.preventDefault();
+          addConditionRow(addConditionButton.closest('[data-condition-builder]'), form.dataset.processKey);
+          return;
+        }
+
+        const removeConditionButton = event.target.closest('[data-remove-condition-row]');
+        if (removeConditionButton) {
+          event.preventDefault();
+          const builder = removeConditionButton.closest('[data-condition-builder]');
+          const row = removeConditionButton.closest('[data-condition-row]');
+          if (row) {
+            row.remove();
+          }
+          updateConditionBuilderState(builder);
+        }
+      });
+
+      form.addEventListener('dragstart', event => {
+        const handle = event.target.closest('[data-workflow-drag-handle]');
+        if (!handle) {
+          draggedWorkflowStep = null;
+          return;
+        }
+        const step = handle.closest('[data-workflow-step]');
+        if (!step) {
+          return;
+        }
+        draggedWorkflowStep = step;
+        step.classList.add('dragging');
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', 'workflow-step');
+        }
+      });
+
+      form.addEventListener('dragend', () => {
+        if (draggedWorkflowStep) {
+          const list = draggedWorkflowStep.closest('[data-workflow-step-list]');
+          draggedWorkflowStep.classList.remove('dragging');
+          updateWorkflowStepListState(list);
+        }
+        draggedWorkflowStep = null;
+      });
+
+      form.addEventListener('dragover', event => {
+        const list = event.target.closest('[data-workflow-step-list]');
+        if (!list || !draggedWorkflowStep || draggedWorkflowStep.closest('[data-workflow-step-list]') !== list) {
+          return;
+        }
+        event.preventDefault();
+        const afterElement = workflowStepAfterDrag(list, event.clientY);
+        const empty = list.querySelector('[data-workflow-empty]');
+        if (!afterElement) {
+          list.insertBefore(draggedWorkflowStep, empty || null);
+        } else {
+          list.insertBefore(draggedWorkflowStep, afterElement);
+        }
+      });
+
+      form.addEventListener('drop', event => {
+        const list = event.target.closest('[data-workflow-step-list]');
+        if (!list || !draggedWorkflowStep) {
+          return;
+        }
+        event.preventDefault();
+        updateWorkflowStepListState(list);
+      });
+
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        const data = collectAdminWorkflowSettings(form);
+        submitWithContainer(form, 'updateAdminWorkflowSettings', data, result => {
+          showNotice(result.message || 'Workflow configuration has been updated.', 'success');
+          if (dashboardState.data) {
+            dashboardState.data.workflowManagement = result.workflowManagement || dashboardState.data.workflowManagement;
+            dashboardState.data.roleAvailability = result.roleAvailability || dashboardState.data.roleAvailability;
+          }
+          dashboardState.roleAvailability = normalizeRoleAvailability(result.roleAvailability || dashboardState.roleAvailability);
+          dashboardState.workflowProcess = result.processKey || data.processKey;
+          applyTopNavRoleVisibility();
+          rerenderAdminLanding();
+        });
+      });
+
+      form.querySelectorAll('[data-workflow-step]').forEach(step => {
+        updateWorkflowStepVisibility(step);
+        updateWorkflowWaitingPreview(step);
+      });
+    });
+  }
+
+  function rerenderAdminLanding() {
+    const body = document.getElementById('dashboard-body');
+    if (!body || !dashboardState.data) {
+      return;
+    }
+    body.innerHTML = renderDashboardData(dashboardState.data);
+    bindDashboardActions();
+    updateAdminViewUrl();
+  }
+
+  function setWorkflowStage(form, stage) {
+    if (!stage) {
+      return;
+    }
+    dashboardState.workflowStage = stage;
+    form.querySelectorAll('[data-workflow-stage-tab]').forEach(button => {
+      const active = button.dataset.workflowStageTab === stage;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    form.querySelectorAll('[data-workflow-stage-panel]').forEach(panel => {
+      panel.hidden = panel.dataset.workflowStage !== stage;
+    });
+  }
+
+  function addWorkflowStep(form, stage) {
+    const panel = findWorkflowStagePanel(form, stage);
+    if (!panel) {
+      return;
+    }
+    const list = panel.querySelector('[data-workflow-step-list]');
+    const empty = list ? list.querySelector('[data-workflow-empty]') : null;
+    const stages = currentWorkflowStages(form.dataset.processKey);
+    const conditionFields = currentWorkflowConditionFields(form.dataset.processKey);
+    const recipientFields = currentWorkflowRecipientFields(form.dataset.processKey);
+    const step = {
+      type: 'notification',
+      name: 'New notification',
+      email: '',
+      emails: [],
+      emailField: '',
+      emailFields: [],
+      subject: '',
+      message: '',
+      waitingLabel: '',
+      whenJson: '',
+      unlessJson: ''
+    };
+    if (!list) {
+      return;
+    }
+    const index = workflowStepCount(list);
+    if (empty) {
+      empty.insertAdjacentHTML('beforebegin', renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields));
+    } else {
+      list.insertAdjacentHTML('beforeend', renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields));
+    }
+    updateWorkflowStepVisibility(list.querySelectorAll('[data-workflow-step]')[index]);
+    updateWorkflowStepListState(list);
+  }
+
+  function moveWorkflowStep(step, direction) {
+    if (!step) {
+      return;
+    }
+    const list = step.closest('[data-workflow-step-list]');
+    const target = direction === 'up'
+      ? previousWorkflowStep(step)
+      : nextWorkflowStep(step);
+    if (!list || !target) {
+      return;
+    }
+    if (direction === 'up') {
+      list.insertBefore(step, target);
+    } else {
+      list.insertBefore(target, step);
+    }
+    updateWorkflowStepListState(list);
+  }
+
+  function previousWorkflowStep(step) {
+    let current = step ? step.previousElementSibling : null;
+    while (current && !current.matches('[data-workflow-step]')) {
+      current = current.previousElementSibling;
+    }
+    return current;
+  }
+
+  function nextWorkflowStep(step) {
+    let current = step ? step.nextElementSibling : null;
+    while (current && !current.matches('[data-workflow-step]')) {
+      current = current.nextElementSibling;
+    }
+    return current;
+  }
+
+  function findWorkflowStagePanel(form, stage) {
+    return Array.from(form.querySelectorAll('[data-workflow-stage-panel]')).find(panel => {
+      return panel.dataset.workflowStage === stage;
+    });
+  }
+
+  function currentWorkflowStages(processKey) {
+    const management = dashboardState.data && dashboardState.data.workflowManagement;
+    const process = management && (management.processes || []).find(item => item.key === processKey);
+    return process && process.stages ? process.stages : [];
+  }
+
+  function currentWorkflowConditionFields(processKey) {
+    const management = dashboardState.data && dashboardState.data.workflowManagement;
+    const process = management && (management.processes || []).find(item => item.key === processKey);
+    return process && process.conditionFields ? process.conditionFields : [];
+  }
+
+  function currentWorkflowRecipientFields(processKey) {
+    const management = dashboardState.data && dashboardState.data.workflowManagement;
+    const process = management && (management.processes || []).find(item => item.key === processKey);
+    return process && process.recipientFields ? process.recipientFields : [];
+  }
+
+  function workflowStepAfterDrag(list, y) {
+    const steps = Array.from(list.querySelectorAll('[data-workflow-step]:not(.dragging)'));
+    return steps.reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {
+        return { offset, element: child };
+      }
+      return closest;
+    }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+  }
+
+  function updateWorkflowStepListState(list) {
+    if (!list) {
+      return;
+    }
+    const steps = Array.from(list.querySelectorAll('[data-workflow-step]'));
+    steps.forEach((step, index) => {
+      const order = step.querySelector('[data-step-order]');
+      if (order) {
+        order.textContent = String(index + 1);
+      }
+    });
+    const empty = list.querySelector('[data-workflow-empty]');
+    if (empty) {
+      empty.hidden = steps.length > 0;
+    }
+  }
+
+  function workflowStepCount(list) {
+    return list ? list.querySelectorAll('[data-workflow-step]').length : 0;
+  }
+
+  function collectAdminWorkflowSettings(form) {
+    const workflows = {};
+    form.querySelectorAll('[data-workflow-stage-panel]').forEach(panel => {
+      const stage = panel.dataset.workflowStage;
+      workflows[stage] = Array.from(panel.querySelectorAll('[data-workflow-step]')).map(collectWorkflowStep);
+    });
+    return {
+      email: dashboardState.email,
+      processKey: form.dataset.processKey,
+      workflows
+    };
+  }
+
+  function collectWorkflowStep(step) {
+    const type = workflowStepFieldValue(step, 'type');
+    const recipientMode = workflowRecipientModeValue(step);
+    const waitingLabel = isWorkflowEditorBlockingType(type) ? workflowStepFieldValue(step, 'waitingLabel') : '';
+    return {
+      type,
+      name: workflowStepFieldValue(step, 'name'),
+      email: recipientMode === 'fixed-email' || recipientMode === 'advanced' ? workflowStepFieldValue(step, 'email') : '',
+      emails: recipientMode === 'fixed-emails' || recipientMode === 'advanced' ? splitWorkflowList(workflowStepFieldValue(step, 'emails')) : [],
+      emailField: recipientMode === 'request-field' || recipientMode === 'advanced' ? workflowStepFieldValue(step, 'emailField') : '',
+      emailFields: recipientMode === 'request-fields' || recipientMode === 'advanced' ? splitWorkflowFieldList(workflowStepFieldValue(step, 'emailFields')) : [],
+      subject: workflowStepFieldValue(step, 'subject'),
+      message: workflowStepFieldValue(step, 'message'),
+      waitingLabel,
+      whenJson: conditionJsonFromBuilder(step, 'whenJson'),
+      unlessJson: conditionJsonFromBuilder(step, 'unlessJson'),
+      followUpStage: isWorkflowEditorBlockingType(type) ? workflowStepFieldValue(step, 'followUpStage') : ''
+    };
+  }
+
+  function refreshWorkflowRecipientModeOptions(step) {
+    if (!step) {
+      return;
+    }
+    const select = step.querySelector('[data-recipient-mode]');
+    if (!select) {
+      return;
+    }
+    const type = workflowStepFieldValue(step, 'type');
+    const previous = select.value || 'fixed-email';
+    select.innerHTML = workflowRecipientModeOptions(type, previous);
+    const values = Array.from(select.options).map(option => option.value);
+    if (values.indexOf(previous) !== -1) {
+      select.value = previous;
+      return;
+    }
+    select.value = workflowStepFieldValue(step, 'emailField') ? 'request-field' : 'fixed-email';
+  }
+
+  function updateWorkflowStepVisibility(step) {
+    if (!step) {
+      return;
+    }
+    const type = workflowStepFieldValue(step, 'type');
+    const mode = workflowRecipientModeValue(step);
+    step.querySelectorAll('[data-recipient-panel]').forEach(panel => {
+      const modes = String(panel.dataset.recipientModes || '').split(/\s+/).filter(Boolean);
+      panel.hidden = modes.indexOf(mode) === -1;
+    });
+    const help = step.querySelector('[data-recipient-help]');
+    if (help) {
+      help.textContent = workflowRecipientHelp(type);
+    }
+    const waitingPanel = step.querySelector('[data-workflow-waiting-panel]');
+    if (waitingPanel) {
+      const isBlocking = isWorkflowEditorBlockingType(type);
+      waitingPanel.hidden = !isBlocking;
+    }
+  }
+
+  function updateWorkflowWaitingPreview(step) {
+    if (!step) {
+      return;
+    }
+    const preview = step.querySelector('[data-workflow-waiting-preview]');
+    if (!preview) {
+      return;
+    }
+    preview.textContent = workflowWaitingLabelPreview(workflowStepPreviewDataFromElement(step));
+  }
+
+  function workflowStepPreviewDataFromElement(step) {
+    return {
+      type: workflowStepFieldValue(step, 'type'),
+      name: workflowStepFieldValue(step, 'name'),
+      email: workflowStepFieldValue(step, 'email'),
+      emails: splitWorkflowList(workflowStepFieldValue(step, 'emails')),
+      emailField: workflowStepFieldValue(step, 'emailField'),
+      emailFields: splitWorkflowFieldList(workflowStepFieldValue(step, 'emailFields')),
+      waitingLabel: workflowStepFieldValue(step, 'waitingLabel')
+    };
+  }
+
+  function workflowRecipientModeValue(step) {
+    const select = step ? step.querySelector('[data-recipient-mode]') : null;
+    return select && select.value ? select.value : 'fixed-email';
+  }
+
+  function addConditionRow(builder, processKey) {
+    if (!builder) {
+      return;
+    }
+    const list = builder.querySelector('[data-condition-row-list]');
+    const empty = builder.querySelector('[data-condition-empty]');
+    const fields = currentWorkflowConditionFields(processKey);
+    if (!list) {
+      return;
+    }
+    const defaultField = fields.length ? fields[0].name : 'requesterEmail';
+    const row = {
+      field: defaultField,
+      operator: 'equals',
+      value: ''
+    };
+    if (empty) {
+      empty.insertAdjacentHTML('beforebegin', renderConditionRow(row, fields));
+    } else {
+      list.insertAdjacentHTML('beforeend', renderConditionRow(row, fields));
+    }
+    updateConditionBuilderState(builder);
+  }
+
+  function updateConditionValueControl(row) {
+    if (!row) {
+      return;
+    }
+    const field = row.querySelector('[data-condition-field]');
+    const operator = row.querySelector('[data-condition-operator]');
+    const wrap = row.querySelector('[data-condition-value-wrap]');
+    if (!field || !operator || !wrap) {
+      return;
+    }
+    const fields = currentWorkflowConditionFields(row.closest('[data-admin-workflow-form]').dataset.processKey);
+    wrap.innerHTML = conditionValueControl(field.value, operator.value, '', fields);
+  }
+
+  function updateConditionBuilderState(builder) {
+    if (!builder) {
+      return;
+    }
+    const count = builder.querySelectorAll('[data-condition-row]').length;
+    const empty = builder.querySelector('[data-condition-empty]');
+    if (empty) {
+      empty.hidden = count > 0;
+    }
+    const raw = builder.querySelector('[data-condition-raw]');
+    if (raw && count > 0) {
+      raw.value = '';
+    }
+  }
+
+  function conditionJsonFromBuilder(step, fieldName) {
+    const builder = step ? step.querySelector(`[data-condition-builder="${fieldName}"]`) : null;
+    if (!builder) {
+      return workflowStepFieldValue(step, fieldName);
+    }
+    const rows = Array.from(builder.querySelectorAll('[data-condition-row]'))
+      .map(conditionObjectFromRow)
+      .filter(Boolean);
+    if (!rows.length) {
+      const raw = builder.querySelector('[data-condition-raw]');
+      return raw ? String(raw.value || '').trim() : '';
+    }
+    if (rows.length === 1) {
+      return JSON.stringify(rows[0]);
+    }
+    const mode = (builder.querySelector('[data-condition-mode]') || {}).value || 'all';
+    return JSON.stringify(mode === 'any' ? { any: rows } : { all: rows });
+  }
+
+  function conditionObjectFromRow(row) {
+    const field = (row.querySelector('[data-condition-field]') || {}).value || '';
+    const operator = (row.querySelector('[data-condition-operator]') || {}).value || 'equals';
+    if (!field) {
+      return null;
+    }
+    if (operator === 'exists') {
+      return { field, exists: true };
+    }
+    if (operator === 'notExists') {
+      return { field, exists: false };
+    }
+    const value = conditionValueFromRow(row);
+    if (operator === 'notEquals') {
+      return { field, notEquals: value };
+    }
+    if (operator === 'in') {
+      return { field, in: Array.isArray(value) ? value : splitWorkflowList(value) };
+    }
+    if (operator === 'notIn') {
+      return { field, notIn: Array.isArray(value) ? value : splitWorkflowList(value) };
+    }
+    return { field, equals: value };
+  }
+
+  function conditionValueFromRow(row) {
+    const input = row.querySelector('[data-condition-value]');
+    if (!input) {
+      return '';
+    }
+    if (input.tagName === 'SELECT' && input.multiple) {
+      return Array.from(input.selectedOptions).map(option => option.value).filter(Boolean);
+    }
+    return String(input.value || '').trim();
+  }
+
+  function workflowStepFieldValue(step, field) {
+    const input = step ? step.querySelector(`[data-step-field="${field}"]`) : null;
+    if (input && input.tagName === 'SELECT' && input.multiple) {
+      return Array.from(input.selectedOptions).map(option => option.value).filter(Boolean).join(',');
+    }
+    return input ? String(input.value || '').trim() : '';
+  }
+
+  function splitWorkflowList(value) {
+    return String(value || '')
+      .split(/[\n,;]+/)
+      .map(normalize)
+      .filter(Boolean);
+  }
+
+  function splitWorkflowFieldList(value) {
+    return String(value || '')
+      .split(/[\s,;]+/)
+      .map(item => String(item || '').trim())
+      .filter(Boolean);
+  }
+
+  function addAdminEmailFromControl(form, button) {
+    const addPanel = button.closest('[data-admin-add-panel]');
+    const sourceGroup = button.closest('[data-admin-access-group]') || button.closest('tr');
+    const input = addPanel
+      ? addPanel.querySelector('[data-admin-email-input]')
+      : (sourceGroup ? sourceGroup.querySelector('[data-admin-email-input]') : null);
+    const selectedScope = addPanel ? adminScopeParts(addPanel.querySelector('[data-admin-scope-select]')) : null;
+    const list = selectedScope
+      ? findAdminListForScope(form, selectedScope.scope, selectedScope.key)
+      : (sourceGroup ? sourceGroup.querySelector('[data-admin-list]') : null);
+    const targetGroup = list ? (list.closest('[data-admin-access-group]') || list.closest('tr')) : sourceGroup;
+    if (!input || !list) {
+      showNotice('Choose an access area.', 'error');
+      return false;
+    }
+
+    const email = normalize(input.value);
+    if (!email) {
+      input.focus();
+      return false;
+    }
+    if (!isValidEmailText(email)) {
+      showNotice('Enter a valid email address.', 'error');
+      input.focus();
+      return false;
+    }
+    if (adminListContainsEmail(list, email)) {
+      showNotice(`${email} is already listed.`, 'error');
+      input.focus();
+      return false;
+    }
+
+    const empty = list.querySelector('[data-admin-empty]');
+    if (empty) {
+      empty.insertAdjacentHTML('beforebegin', renderAdminEmailRow(email));
+    } else {
+      list.insertAdjacentHTML('beforeend', renderAdminEmailRow(email));
+    }
+    input.value = '';
+    if (targetGroup) {
+      updateAdminAccessGroupState(targetGroup);
+    }
+    return true;
+  }
+
+  function flushPendingAdminEmailInputs(form) {
+    const inputs = Array.from(form.querySelectorAll('[data-admin-email-input]'));
+    for (const input of inputs) {
+      if (!normalize(input.value)) {
+        continue;
+      }
+      const group = input.closest('[data-admin-add-panel]') || input.closest('[data-admin-access-group]') || input.closest('tr');
+      const addButton = group ? group.querySelector('[data-add-admin-email]') : null;
+      if (!addButton || !addAdminEmailFromControl(form, addButton)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function adminScopeParts(select) {
+    const value = String(select && select.value ? select.value : '');
+    const separator = value.indexOf('::');
+    if (separator === -1) {
+      return { scope: '', key: '' };
+    }
+    return {
+      scope: value.slice(0, separator),
+      key: value.slice(separator + 2)
+    };
+  }
+
+  function findAdminListForScope(form, scope, key) {
+    const normalizedKey = String(key || '');
+    return Array.from(form.querySelectorAll('[data-admin-list]')).find(list => {
+      return list.dataset.adminList === scope && String(list.dataset.processKey || '') === normalizedKey;
+    });
+  }
+
+  function removeAdminEmailRow(form, button) {
+    const row = button.closest('[data-admin-email]');
+    const list = button.closest('[data-admin-list]');
+    const group = button.closest('[data-admin-access-group]') || button.closest('tr');
+    if (!row || !list || !group) {
+      return;
+    }
+    if (list.dataset.adminList === 'globalAdmins' && collectAdminEmailsFromList(list).length <= 1) {
+      showNotice('At least one global admin is required.', 'error');
+      return;
+    }
+    row.remove();
+    updateAdminAccessGroupState(group);
+  }
+
+  function collectAdminUserSettings(form) {
+    const globalList = form.querySelector('[data-admin-list="globalAdmins"]');
+    const processAdmins = {};
+    form.querySelectorAll('[data-admin-list="processAdmins"]').forEach(list => {
+      processAdmins[list.dataset.processKey] = collectAdminEmailsFromList(list);
+    });
+    return {
+      email: dashboardState.email,
+      globalAdmins: collectAdminEmailsFromList(globalList),
+      processAdmins
+    };
+  }
+
+  function collectAdminEmailsFromList(list) {
+    if (!list) {
+      return [];
+    }
+    return Array.from(list.querySelectorAll('[data-admin-email]'))
+      .map(row => normalize(row.dataset.adminEmail))
+      .filter(Boolean);
+  }
+
+  function adminListContainsEmail(list, email) {
+    return collectAdminEmailsFromList(list).indexOf(normalize(email)) !== -1;
+  }
+
+  function updateAdminAccessGroupState(group) {
+    const list = group.querySelector('[data-admin-list]');
+    if (!list) {
+      return;
+    }
+    const count = collectAdminEmailsFromList(list).length;
+    const empty = list.querySelector('[data-admin-empty]');
+    const counter = group.querySelector('[data-admin-count]');
+    if (empty) {
+      empty.hidden = count > 0;
+    }
+    if (counter) {
+      counter.textContent = adminCountLabel(count);
+    }
+  }
+
+  function isValidEmailText(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ''));
+  }
+
+  function updateAdminViewUrl() {
+    if (!window.history || !window.history.replaceState) {
+      return;
+    }
+    const params = { role: 'admin' };
+    if (dashboardState.adminView !== 'forms') {
+      params.adminView = dashboardState.adminView;
+    }
+    window.history.replaceState(null, '', appUrl('dashboard', params));
+  }
+
+  function bindAdminProcessNavigation() {
+    document.querySelectorAll('[data-admin-process]').forEach(link => {
+      link.addEventListener('click', event => {
+        const processKey = event.currentTarget.dataset.adminProcess;
+        const dashboard = dashboardState.adminDashboards && dashboardState.adminDashboards[processKey];
+        event.preventDefault();
+        dashboardState.selectedProcess = processKey;
+        const body = document.getElementById('dashboard-body');
+        if (dashboard) {
+          hideGlobalProgress(true);
+          dashboardState.data = dashboard;
+          body.innerHTML = renderDashboardData(dashboard);
+          bindDashboardActions();
+          return;
+        }
+        body.innerHTML = renderLoading('Loading admin section');
+        const payload = {
+          role: 'admin',
+          email: dashboardState.email,
+          process: processKey
+        };
+        runServer('getDashboardData', payload, dashboardLoadTimeoutMs(payload))
+          .then(result => {
+            renderLoadedDashboardData(body, result);
+          })
+          .catch(error => {
+            body.innerHTML = renderAuthError(error);
+          });
+      });
+    });
+
+    document.querySelectorAll('[data-admin-process-chooser]').forEach(link => {
+      link.addEventListener('click', event => {
+        if (!dashboardState.adminChooserData) {
+          return;
+        }
+        event.preventDefault();
+        hideGlobalProgress(true);
+        dashboardState.data = dashboardState.adminChooserData;
+        dashboardState.selectedProcess = '';
+        dashboardState.adminView = 'forms';
+        const body = document.getElementById('dashboard-body');
+        body.innerHTML = renderDashboardData(dashboardState.adminChooserData);
+        bindDashboardActions();
+        updateAdminViewUrl();
+      });
+    });
+  }
+
+  function bindDashboardFilter() {
+    const input = document.querySelector('[data-dashboard-filter]');
+    if (!input) {
+      return;
+    }
+    const clearButton = document.querySelector('[data-dashboard-filter-clear]');
+    const resultCount = document.querySelector('[data-dashboard-filter-count]');
+    const items = Array.from(document.querySelectorAll('[data-dashboard-request]'));
+
+    const update = () => {
+      const query = normalize(input.value);
+      const terms = query.split(/\s+/).filter(Boolean);
+      let visibleTotal = 0;
+
+      items.forEach(item => {
+        const haystack = item.dataset.search || '';
+        const matches = terms.every(term => haystack.indexOf(term) !== -1);
+        item.classList.toggle('hidden', !matches);
+        if (matches) {
+          visibleTotal += 1;
+        }
+      });
+
+      document.querySelectorAll('[data-request-section]').forEach(section => {
+        const sectionItems = Array.from(section.querySelectorAll('[data-dashboard-request]'));
+        const visibleItems = sectionItems.filter(item => !item.classList.contains('hidden')).length;
+        const count = section.querySelector('[data-section-visible-count]');
+        const empty = section.querySelector('[data-section-empty]');
+        if (count) {
+          count.textContent = terms.length ? `${visibleItems} of ${sectionItems.length}` : String(sectionItems.length);
+        }
+        if (empty) {
+          empty.classList.toggle('hidden', !terms.length || visibleItems > 0);
+        }
+        section.open = terms.length ? visibleItems > 0 : false;
+      });
+
+      if (resultCount) {
+        resultCount.textContent = terms.length
+          ? `${visibleTotal} of ${items.length} requests`
+          : `${items.length} requests`;
+      }
+      if (clearButton) {
+        clearButton.hidden = !terms.length;
+      }
+    };
+
+    input.addEventListener('input', update);
+    if (clearButton) {
+      clearButton.addEventListener('click', () => {
+        input.value = '';
+        input.focus();
+        update();
+      });
+    }
+    update();
+  }
+
+  function renderAuthError(error) {
+    return `
+      <div class="notice error">
+        <strong>Dashboard could not be loaded.</strong><br>
+        ${escapeHtml(error && error.message ? error.message : String(error))}
+        <div class="actions inline">
+          <button class="button secondary" type="button" onclick="loadDashboard()">Try again</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderLoading(message) {
+    return `<p class="muted">${escapeHtml(message)}...</p>`;
+  }
+
+  function kpi(value, label) {
+    return `<div class="kpi"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
+  }
+
+  function renderApproval() {
+    const request = state.request || {};
+    const approval = state.approval || {};
+    const stageLabel = approval.stageLabel || (approval.stage === 'final' ? 'Final approval' : 'Approval');
+    const includeActual = approval.stage === 'final' || Boolean(request.actualSubmittedAt || request.actualHours);
+    const primaryDecision = approval.primaryDecision || request.activeWorkflowPrimaryDecision || 'approve';
+    const primaryLabel = approval.primaryActionLabel || request.activeWorkflowPrimaryActionLabel || 'Approve';
+    return `
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>${escapeHtml(stageLabel)}</h2>
+            <p>${escapeHtml(approval.stepName || 'Workflow step')} | ${escapeHtml(request.requestId || '')}</p>
+          </div>
+          <div class="actions inline">
+            <a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'approver' }))}">Workflow dashboard</a>
+          </div>
+        </div>
+        ${renderRequestSummary(request, includeActual)}
+        ${renderHistory(request)}
+        <form id="approval-form" class="stack">
+          <label class="field full">
+            <span>Comment</span>
+            <textarea name="comment"></textarea>
+          </label>
+          <div class="actions">
+            ${approval.canDeny ? '<button class="button danger" type="button" data-decision="deny">Deny</button>' : ''}
+            <button class="button secondary" type="button" data-decision="changes">Request changes</button>
+            <button class="button primary" type="button" data-decision="${escapeHtml(primaryDecision)}">${escapeHtml(primaryLabel)}</button>
+          </div>
+        </form>
+      </section>
+    `;
+  }
+
+  function renderRequestForm() {
+    const request = state.mode === 'edit' ? state.request || {} : {};
+    const isEdit = state.mode === 'edit';
+    const processType = state.processType || request.processType || 'overtime';
+    const processName = state.processName || request.processName || 'Support Staff Overtime';
+    const processDescription = state.processDescription || 'Overtime must be approved in advance.';
+    const definition = state.formDefinition || {};
+    return `
+      <form id="request-form" class="stack">
+        <input type="hidden" name="processType" value="${escapeHtml(processType)}">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>${escapeHtml(processName)} Approval Form</h2>
+              <p>${escapeHtml(processDescription)}</p>
+            </div>
+          </div>
+          ${definition.introHtml ? `<div class="info-block">${definition.introHtml}</div>` : ''}
+        </section>
+        ${(definition.sections || []).map((section, index) => renderConfiguredFormSection(section, request, isEdit, index)).join('')}
+        <section class="panel">
+          <div class="actions">
+            <button class="button primary" type="submit">${escapeHtml(isEdit ? (definition.editSubmitLabel || 'Resubmit request') : (definition.submitLabel || 'Submit request'))}</button>
+          </div>
+        </section>
+      </form>
+    `;
+  }
+
+  function renderConfiguredFormSection(section, request, isEdit, index) {
+    const title = isEdit && section.editTitle ? section.editTitle : section.title;
+    const description = isEdit && section.editDescription ? section.editDescription : section.description;
+    const layout = section.layout || 'grid';
+    return `
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>${escapeHtml(title || '')}</h2>
+            ${description ? `<p>${escapeHtml(description)}</p>` : ''}
+          </div>
+          ${index === 0 ? `
+            <div class="actions inline">
+              <a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'requester' }))}">My Requests</a>
+            </div>
+          ` : ''}
+        </div>
+        ${index === 0 && isEdit && request.changeComment ? `<div class="notice"><strong>Changes requested:</strong><br>${escapeHtml(request.changeComment)}</div>` : ''}
+        ${index === 0 && isEdit ? `
+          <label class="field full">
+            <span>Adjustment comment</span>
+            <textarea name="adjustmentComment"></textarea>
+            <span class="help">Optional note to show in Approval History with this adjustment.</span>
+          </label>
+        ` : ''}
+        <div class="${escapeHtml(layout)}">
+          ${(section.fields || []).map(fieldSpec => renderConfiguredField(fieldSpec, request)).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderConfiguredField(fieldSpec, request) {
+    const type = fieldSpec.type || 'text';
+    const visible = configuredFieldVisible(fieldSpec, request);
+    const className = configuredFieldClass(fieldSpec, visible);
+    const conditionalAttributes = configuredFieldAttributes(fieldSpec);
+    const required = configuredFieldRequired(fieldSpec, request);
+    const inputAttributes = configuredInputAttributes(fieldSpec);
+    const value = configuredFieldValue(fieldSpec, request);
+
+    if (type === 'content') {
+      if (!fieldSpec.html) {
+        return `<div class="${className}" ${conditionalAttributes}></div>`;
+      }
+      return `<div class="${className}" ${conditionalAttributes}>${fieldSpec.html}</div>`;
+    }
+    if (type === 'requestSummary') {
+      return `<div class="${className}" ${conditionalAttributes}>${renderRequestSummary(request || {}, Boolean(fieldSpec.includeActual))}</div>`;
+    }
+    if (type === 'divider') {
+      return `<div class="divider ${className}" ${conditionalAttributes}></div>`;
+    }
+    if (type === 'hoursWarning') {
+      return `<div class="hours-warning hidden ${className}" data-hours-warning="${escapeHtml(fieldSpec.kind || 'planned')}" ${hoursWarningAttributes(fieldSpec)} role="status" aria-live="polite" ${conditionalAttributes}></div>`;
+    }
+    if (type === 'mealRules') {
+      return `<div class="${className}" ${conditionalAttributes}>${mealBreakRulesHtml(Boolean(fieldSpec.planned))}</div>`;
+    }
+    if (type === 'textarea') {
+      return `
+        <label class="field ${className}" ${conditionalAttributes}>
+          <span>${escapeHtml(fieldSpec.label || '')}</span>
+          <textarea name="${escapeHtml(fieldSpec.name)}" ${required ? 'required' : ''} ${inputAttributes}>${escapeHtml(value || '')}</textarea>
+          ${fieldSpec.help ? `<span class="help">${escapeHtml(fieldSpec.help)}</span>` : ''}
+        </label>
+      `;
+    }
+    if (type === 'radio') {
+      return `
+        <fieldset class="field ${className}" ${conditionalAttributes}>
+          <legend class="label">${escapeHtml(fieldSpec.label || '')}</legend>
+          ${fieldSpec.help ? `<span class="help">${escapeHtml(fieldSpec.help)}</span>` : ''}
+          <div class="choice-row ${fieldSpec.layout === 'checklist' ? 'compact' : ''}">
+            ${(fieldSpec.options || []).map(option => radio(fieldSpec.name, optionValue(option), value === optionValue(option), inputAttributes, required)).join('')}
+          </div>
+        </fieldset>
+      `;
+    }
+    if (type === 'select') {
+      return selectField(fieldSpec.name, fieldSpec.label, fieldSpec.options || [], value, required, fieldSpec.help, className, conditionalAttributes, inputAttributes);
+    }
+    if (type === 'checkbox') {
+      const checked = value === 'Yes' || value === true || value === 'true';
+      return `
+        <label class="ack ${className}" ${conditionalAttributes}>
+          <input type="checkbox" name="${escapeHtml(fieldSpec.name)}" value="true" ${checked ? 'checked' : ''} ${required ? 'required' : ''} ${inputAttributes}>
+          <span>${escapeHtml(fieldSpec.label || '')}</span>
+        </label>
+      `;
+    }
+    if (type === 'choiceCards') {
+      return `
+        <fieldset class="field ${className}" ${conditionalAttributes}>
+          <legend class="label">${escapeHtml(fieldSpec.label || '')}</legend>
+          <div class="compensation-options">
+            ${(fieldSpec.options || []).map(option => choiceCardOption(fieldSpec.name, option, value, inputAttributes, required, request)).join('')}
+          </div>
+        </fieldset>
+      `;
+    }
+    if (type === 'checklistChoice') {
+      const checklistOptions = fieldSpec.options || ['Yes', 'No', 'N/A'];
+      return `
+        <fieldset class="field checklist-item ${className}" ${conditionalAttributes}>
+          <legend class="label">${escapeHtml(fieldSpec.label || '')}</legend>
+          <div class="choice-row compact">
+            ${checklistOptions.map(option => radio(fieldSpec.name, optionValue(option), value === optionValue(option), inputAttributes, required)).join('')}
+          </div>
+        </fieldset>
+      `;
+    }
+
+    return field(fieldSpec.name, fieldSpec.label, fieldSpec.htmlType || type, value, required, fieldSpec.help, className, conditionalAttributes, inputAttributes);
+  }
+
+  function configuredFieldValue(fieldSpec, request) {
+    const current = request && fieldSpec.name ? request[fieldSpec.name] : '';
+    if (current !== undefined && current !== null && current !== '') {
+      return current;
+    }
+    if (fieldSpec.defaultFrom === 'currentUserEmail') {
+      return state.currentUserEmail || '';
+    }
+    if (fieldSpec.defaultFromField && request && request[fieldSpec.defaultFromField] !== undefined && request[fieldSpec.defaultFromField] !== null) {
+      return request[fieldSpec.defaultFromField];
+    }
+    return fieldSpec.defaultValue || '';
+  }
+
+  function configuredFieldVisible(fieldSpec, request) {
+    if (!fieldSpec.visibleWhen) {
+      return true;
+    }
+    const values = Object.assign({}, request || {});
+    if (fieldSpec.name && values[fieldSpec.name] === undefined && fieldSpec.defaultValue !== undefined) {
+      values[fieldSpec.name] = fieldSpec.defaultValue;
+    }
+    return conditionMatches(fieldSpec.visibleWhen, values);
+  }
+
+  function configuredFieldRequired(fieldSpec, request) {
+    if (fieldSpec.requiredWhen) {
+      return conditionMatches(fieldSpec.requiredWhen, request || {});
+    }
+    return Boolean(fieldSpec.required || fieldSpec.mustBeChecked);
+  }
+
+  function configuredFieldClass(fieldSpec, visible) {
+    return [
+      fieldSpec.layout === 'full' ? 'full' : '',
+      fieldSpec.layout === 'checklist' ? 'checklist-item' : '',
+      fieldSpec.className || '',
+      fieldSpec.visibleWhen ? 'conditional-field' : '',
+      visible ? '' : 'hidden'
+    ].filter(Boolean).join(' ');
+  }
+
+  function configuredFieldAttributes(fieldSpec) {
+    if (!fieldSpec.visibleWhen) {
+      return '';
+    }
+    return `data-visible-when="${escapeHtml(JSON.stringify(fieldSpec.visibleWhen))}"`;
+  }
+
+  function configuredInputAttributes(fieldSpec) {
+    const attributes = [];
+    const addAttribute = (name, value) => {
+      if (value === undefined || value === null || value === false) {
+        return;
+      }
+      if (value === true) {
+        attributes.push(escapeHtml(name));
+        return;
+      }
+      attributes.push(`${escapeHtml(name)}="${escapeHtml(value)}"`);
+    };
+
+    if (fieldSpec.visibleWhen && (fieldSpec.required || fieldSpec.mustBeChecked || fieldSpec.requiredWhen)) {
+      attributes.push('data-required-when-visible="true"');
+    }
+    if (fieldSpec.requiredWhen) {
+      attributes.push(`data-required-condition="${escapeHtml(JSON.stringify(fieldSpec.requiredWhen))}"`);
+    }
+    addAttribute('autocomplete', fieldSpec.autocomplete);
+    addAttribute('inputmode', fieldSpec.inputMode || fieldSpec.inputmode);
+    addAttribute('autocapitalize', fieldSpec.autocapitalize);
+    addAttribute('spellcheck', fieldSpec.spellcheck);
+    addAttribute('pattern', fieldSpec.pattern);
+    return attributes.join(' ');
+  }
+
+  function hoursWarningAttributes(fieldSpec) {
+    const attributes = {
+      startField: fieldSpec.startField || `${fieldSpec.kind || 'planned'}StartTime`,
+      finishField: fieldSpec.finishField || `${fieldSpec.kind || 'planned'}FinishTime`,
+      hoursField: fieldSpec.hoursField || `${fieldSpec.kind || 'planned'}Hours`,
+      modeField: fieldSpec.modeField || '',
+      compareModeValue: fieldSpec.compareModeValue || '',
+      compareWorkdayField: fieldSpec.compareWorkdayField || '',
+      compareStartField: fieldSpec.compareStartField || '',
+      compareFinishField: fieldSpec.compareFinishField || '',
+      compareWarningTitle: fieldSpec.compareWarningTitle || '',
+      compareWarningMessage: fieldSpec.compareWarningMessage || ''
+    };
+    return Object.keys(attributes)
+      .filter(key => attributes[key])
+      .map(key => `data-${kebabCase(key)}="${escapeHtml(attributes[key])}"`)
+      .join(' ');
+  }
+
+  function kebabCase(value) {
+    return String(value).replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+  }
+
+  function renderActualHours() {
+    const request = state.request || {};
+    const definition = state.formDefinition || {};
+    const isChecklist = state.mode === 'checklist';
+    const isChangeEdit = !isChecklist && (request.status === 'NEEDS_ACTUAL_HOURS_CHANGES' || request.status === 'PENDING_FINAL_APPROVAL');
+    const defaultSubmitLabel = 'Submit actual hours';
+    const defaultEditLabel = 'Resubmit actual hours';
+    const submitActions = isChecklist
+      ? `
+            <button class="button secondary" type="submit" data-checklist-action="save">Save checklist</button>
+            <button class="button primary" type="submit" data-checklist-action="complete">Complete checklist</button>
+        `
+      : `<button class="button primary" type="submit">${escapeHtml(isChangeEdit ? (definition.editSubmitLabel || defaultEditLabel) : (definition.submitLabel || defaultSubmitLabel))}</button>`;
+    return `
+      <form id="actual-form" class="stack">
+        ${(definition.sections || []).map((section, index) => renderConfiguredFormSection(section, request, isChangeEdit, index)).join('')}
+        <section class="panel">
+          <div class="actions">
+            ${submitActions}
+          </div>
+        </section>
+      </form>
+    `;
+  }
+
+  function renderRequestSummary(request, includeActual) {
+    if (request.processType === 'vtr') {
+      return renderVtrRequestSummary(request);
+    }
+
+    const isWorkdayAdjustment = requestIsWorkdayAdjustment(request);
+    const plannedTimeLabel = isWorkdayAdjustment ? 'Planned Work Hours' : 'Planned Overtime';
+    const plannedHoursLabel = isWorkdayAdjustment ? 'Overtime Hours Requested' : 'Planned Hours';
+    const rows = [
+      ['Request ID', request.requestId],
+      ['Form', request.processName || request.processType],
+      ['Submitted', formatDateTime(request.createdAt)],
+      ['Employee', employeeLabel(request)],
+      ['Line Manager', request.lineManagerEmail],
+      ['Requesting Staff Member', request.requesterEmail || request.lineManagerEmail],
+      ['Status', request.statusLabel || request.status],
+      ['Waiting On', request.waitingOnLabel],
+      { section: 'Pre-approval request' },
+      ['Overtime Date', formatDate(request.overtimeDate)],
+      ['Reason', request.reason],
+      ['Normally Works This Day', request.normallyWorks],
+      ['Normal Work Hours', request.normallyWorks === 'Yes' ? `${request.normalStartTime} to ${request.normalFinishTime}` : 'No normal work hours'],
+      [plannedTimeLabel, request.plannedStartTime ? `${request.plannedStartTime} to ${request.plannedFinishTime}` : ''],
+      [plannedHoursLabel, request.plannedHours],
+      ['Compensation', request.compensationMethod]
+    ];
+
+    if (request.changeComment) {
+      rows.push(['Change Request', request.changeComment]);
+    }
+    if (request.lastEditedAt) {
+      rows.push(['Last Edited', formatDateTime(request.lastEditedAt)]);
+    }
+
+    if (includeActual) {
+      rows.push({ section: 'Actual hours confirmation' });
+      rows.push(['Worked As Approved', request.workedAsApproved || '']);
+      rows.push([isWorkdayAdjustment ? 'Actual Work Hours' : 'Actual Overtime', request.actualStartTime ? `${request.actualStartTime} to ${request.actualFinishTime}` : '']);
+      rows.push([isWorkdayAdjustment ? 'Actual Overtime Hours' : 'Actual Hours', request.actualHours || '']);
+      rows.push(['Meal Allowance', request.mealAllowance || '']);
+      if (request.workedAsApproved === 'No') {
+        rows.push(['Variation Reason', request.variationReason || '']);
+      }
+    }
+
+    return `
+      <table class="summary">
+        <tbody>
+          ${rows.filter(summaryRowHasValue).map(renderSummaryRow).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function summaryRowHasValue(row) {
+    return row && row.section ? true : row[1] !== undefined && row[1] !== null && row[1] !== '';
+  }
+
+  function renderSummaryRow(row) {
+    if (row && row.section) {
+      return `<tr class="summary-section"><th colspan="2">${escapeHtml(row.section)}</th></tr>`;
+    }
+    return `<tr><th>${escapeHtml(row[0])}</th><td>${escapeHtml(row[1])}</td></tr>`;
+  }
+
+  function requestIsWorkdayAdjustment(request) {
+    return normalize(request && request.formOptionVariants && request.formOptionVariants.compensationMethod) === normalize('adjustedWorkday');
+  }
+
+  function renderHistory(request) {
+    const history = []
+      .concat(request.approvalHistory || [])
+      .concat(request.finalApprovalHistory || [])
+      .concat(visibleChangeHistoryEntries(request.changeHistory || []))
+      .sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+
+    if (!history.length) {
+      return '';
+    }
+
+    return `
+      <div class="history">
+        <h3>Approval History</h3>
+        ${history.map(entry => renderApprovalHistoryEntry(entry)).join('')}
+      </div>
+    `;
+  }
+
+  function renderApprovalHistoryEntry(entry) {
+    if (entry.type === 'adjustment' || entry.requestedByEmail) {
+      return renderChangeHistoryEntry(entry);
+    }
+    const recipients = Array.isArray(entry.recipients) && entry.recipients.length
+      ? entry.recipients.join(', ')
+      : '';
+    const actor = entry.approverEmail ? ` (${escapeHtml(entry.approverEmail)})` : '';
+    const target = recipients ? ` to ${escapeHtml(recipients)}` : '';
+    return `<p>${escapeHtml(formatDateTime(entry.at))}: ${escapeHtml(entry.stepName || 'Workflow step')}${actor} ${escapeHtml(entry.decision || '')}${target}${entry.comment ? ` - ${escapeHtml(entry.comment)}` : ''}</p>`;
+  }
+
+  function renderMessagePanel(title, message, extraHtml) {
+    return `
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>${escapeHtml(title || '')}</h2>
+            <p>${escapeHtml(message || '')}</p>
+          </div>
+        </div>
+        ${extraHtml || ''}
+      </section>
+    `;
+  }
+
+  function renderClosedAction(action) {
+    if (!action || !action.label || !action.mode) {
+      return '';
+    }
+    return `
+      <div class="actions inline">
+        <a class="button secondary" href="${escapeHtml(appUrl(action.mode, action.role ? { role: action.role } : {}))}">${escapeHtml(action.label)}</a>
+      </div>
+    `;
+  }
+
+  function bindRequestForm() {
+    const form = document.getElementById('request-form');
+    wireConfiguredForm();
+    wireCompensationOptions();
+    enhanceDatePickers();
+    enhanceTimePickers();
+    wireHoursConsistencyWarning('planned');
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const data = collectForm(form);
+      const isEdit = state.mode === 'edit';
+      if (isEdit) {
+        data.token = state.token || '';
+        data.requestId = state.requestId || (state.request && state.request.requestId) || '';
+      }
+      submitWithContainer(form, isEdit ? 'submitEditedRequest' : 'submitRequest', data, result => {
+        showNotice(result.message, 'success');
+        app.innerHTML = renderMessagePanel(isEdit ? 'Request resubmitted' : 'Request submitted', result.message, `<div class="actions inline"><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'requester' }))}">Open My Requests</a></div>`);
+      });
+    });
+  }
+
+  function wireCompensationOptions() {
+    document.querySelectorAll('.compensation-option').forEach(card => {
+      card.addEventListener('click', event => {
+        if (event.target.closest('[data-compensation-details]')) {
+          return;
+        }
+        const input = card.querySelector('input[type="radio"]');
+        if (!input || input.disabled || card.classList.contains('hidden')) {
+          return;
+        }
+        selectChoiceCardInput(input);
+      });
+    });
+    document.querySelectorAll('input[name="compensationMethod"]').forEach(input => {
+      input.addEventListener('change', updateCompensationSelection);
+    });
+    document.querySelectorAll('[data-compensation-details]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const card = event.currentTarget.closest('.compensation-option');
+        const panel = card.querySelector('.compensation-detail');
+        const expanded = panel.classList.toggle('hidden') === false;
+        event.currentTarget.textContent = expanded ? 'Hide details' : 'Details';
+      });
+    });
+    updateCompensationSelection();
+  }
+
+  function selectChoiceCardInput(input) {
+    input.checked = true;
+    updateConfiguredFieldVisibility();
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    window.setTimeout(updateConfiguredFieldVisibility, 0);
+  }
+
+  function updateCompensationSelection() {
+    document.querySelectorAll('.compensation-option').forEach(card => {
+      const input = card.querySelector('input[type="radio"]');
+      card.classList.toggle('selected', Boolean(input && input.checked && !input.disabled && !card.classList.contains('hidden')));
+    });
+  }
+
+  function bindApproval() {
+    document.querySelectorAll('[data-decision]').forEach(button => {
+      button.addEventListener('click', event => {
+        const form = document.getElementById('approval-form');
+        const data = collectForm(form);
+        data.token = state.token;
+        data.decision = event.currentTarget.dataset.decision;
+        submitWithContainer(form, 'submitApprovalDecision', data, result => {
+          showNotice(result.message, 'success');
+          app.innerHTML = renderMessagePanel('Decision recorded', result.message, `<div class="actions inline"><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'approver' }))}">Open workflow dashboard</a></div>`);
+        });
+      });
+    });
+  }
+
+  function bindActualHours() {
+    wireConfiguredForm();
+    wireCompensationOptions();
+    enhanceTimePickers();
+    wireHoursConsistencyWarning('actual');
+    document.getElementById('actual-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const data = collectForm(form);
+      data.token = state.token;
+      data.requestId = state.requestId || (state.request && state.request.requestId) || '';
+      const isChecklist = state.mode === 'checklist';
+      if (isChecklist) {
+        const submitter = event.submitter || null;
+        data.checklistAction = submitter && submitter.dataset && submitter.dataset.checklistAction === 'complete'
+          ? 'complete'
+          : 'save';
+      }
+      submitWithContainer(form, isChecklist ? 'submitVtrChecklist' : 'submitActualHours', data, result => {
+        if (isChecklist) {
+          if (result.request) {
+            state.request = result.request;
+          }
+          showNotice(result.message, 'success');
+          if (result.closed) {
+            app.innerHTML = renderMessagePanel('Checklist completed', result.message, `<div class="actions inline"><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'requester' }))}">Open My Requests</a></div>`);
+          }
+          return;
+        }
+        showNotice(result.message, 'success');
+        app.innerHTML = renderMessagePanel('Actual hours submitted', result.message, `<div class="actions inline"><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'requester' }))}">Open My Requests</a></div>`);
+      });
+    });
+  }
+
+  function wireConfiguredForm() {
+    const form = configuredFormElement();
+    if (!form) {
+      return;
+    }
+    form.querySelectorAll('input, select, textarea').forEach(input => {
+      input.addEventListener('change', updateConfiguredFieldVisibility);
+      input.addEventListener('input', updateConfiguredFieldVisibility);
+    });
+    updateConfiguredFieldVisibility();
+  }
+
+  function updateConfiguredFieldVisibility() {
+    const form = configuredFormElement();
+    if (!form) {
+      return;
+    }
+    const values = collectCurrentFormValues(form);
+    form.querySelectorAll('[data-visible-when]').forEach(element => {
+      const condition = parseJsonAttribute(element.dataset.visibleWhen);
+      const visible = conditionMatches(condition, values);
+      if (element.dataset.hoursWarning !== undefined) {
+        element.dataset.conditionVisible = visible ? 'true' : 'false';
+        if (!visible) {
+          hideHoursWarning(element);
+        }
+        return;
+      }
+      element.classList.toggle('hidden', !visible);
+      setConditionalInputsEnabled(element, visible);
+      element.querySelectorAll('input, select, textarea').forEach(input => {
+        const requiredWhenVisible = input.dataset.requiredWhenVisible === 'true';
+        const requiredCondition = parseJsonAttribute(input.dataset.requiredCondition);
+        input.required = visible && (requiredCondition ? conditionMatches(requiredCondition, values) : requiredWhenVisible);
+      });
+    });
+    form.querySelectorAll('[data-required-condition]').forEach(input => {
+      const conditionalContainer = input.closest('[data-visible-when]');
+      if (conditionalContainer && conditionalContainer.classList.contains('hidden')) {
+        input.required = false;
+        return;
+      }
+      input.required = conditionMatches(parseJsonAttribute(input.dataset.requiredCondition), values);
+    });
+    updateCompensationSelection();
+  }
+
+  function configuredFormElement() {
+    return document.getElementById('request-form') || document.getElementById('actual-form');
+  }
+
+  function setConditionalInputsEnabled(element, visible) {
+    element.querySelectorAll('input, select, textarea').forEach(input => {
+      if (!visible) {
+        input.dataset.conditionalDisabled = 'true';
+        input.disabled = true;
+        if (input.type === 'radio' || input.type === 'checkbox') {
+          input.checked = false;
+        }
+        return;
+      }
+      if (input.dataset.conditionalDisabled === 'true') {
+        input.disabled = false;
+        delete input.dataset.conditionalDisabled;
+      }
+    });
+  }
+
+  function collectCurrentFormValues(form) {
+    const values = Object.assign({}, state.request || {});
+    const fd = new FormData(form);
+    fd.forEach((value, key) => {
+      values[key] = value;
+    });
+    form.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      values[input.name] = input.checked ? 'Yes' : '';
+    });
+    return values;
+  }
+
+  function parseJsonAttribute(value) {
+    try {
+      return JSON.parse(value || '');
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function conditionMatches(condition, values) {
+    if (!condition) {
+      return true;
+    }
+    if (Array.isArray(condition)) {
+      return condition.every(item => conditionMatches(item, values));
+    }
+    if (condition.field) {
+      const actual = normalize(values[condition.field]);
+      if (condition.equals !== undefined) {
+        return actual === normalize(condition.equals);
+      }
+      if (condition.notEquals !== undefined) {
+        return actual !== normalize(condition.notEquals);
+      }
+      if (condition.in !== undefined) {
+        return [].concat(condition.in).some(value => actual === normalize(value));
+      }
+      if (condition.notIn !== undefined) {
+        return ![].concat(condition.notIn).some(value => actual === normalize(value));
+      }
+      if (condition.exists !== undefined) {
+        return Boolean(actual) === Boolean(condition.exists);
+      }
+      return Boolean(actual);
+    }
+    return Object.keys(condition).every(key => normalize(values[key]) === normalize(condition[key]));
+  }
+
+  function wireHoursConsistencyWarning(kind) {
+    const warning = document.querySelector(`[data-hours-warning="${kind}"]`);
+    if (!warning) {
+      return;
+    }
+
+    const config = hoursWarningConfig(warning);
+    const start = formInputByName(config.startField);
+    const finish = formInputByName(config.finishField);
+    const hours = formInputByName(config.hoursField);
+    if (!start || !finish) {
+      return;
+    }
+
+    const watchedInputs = [start, finish].concat(hours ? [hours] : []);
+    [config.modeField, config.compareWorkdayField, config.compareStartField, config.compareFinishField]
+      .filter(Boolean)
+      .forEach(fieldName => watchedInputs.push(...document.querySelectorAll(`[name="${cssEscape(fieldName)}"]`)));
+
+    const update = () => updateHoursConsistencyWarning(kind, start, finish, hours, warning, config);
+    watchedInputs.forEach(input => {
+      input.addEventListener('input', update);
+      input.addEventListener('change', update);
+      input.addEventListener('blur', update);
+    });
+    update();
+  }
+
+  function updateHoursConsistencyWarning(kind, startInput, finishInput, hoursInput, warning, config) {
+    if (!warningConditionVisible(warning)) {
+      hideHoursWarning(warning);
+      return;
+    }
+
+    const startMinutes = parseTimeToMinutes(startInput.value);
+    const finishMinutes = parseTimeToMinutes(finishInput.value);
+    if (startMinutes === null || finishMinutes === null) {
+      hideHoursWarning(warning);
+      return;
+    }
+
+    const sameTime = finishMinutes === startMinutes;
+    let elapsedMinutes = finishMinutes - startMinutes;
+    if (elapsedMinutes < 0) {
+      elapsedMinutes += 24 * 60;
+    }
+    const elapsedHours = elapsedMinutes / 60;
+    const tolerance = 0.03;
+    const isComparisonMode = config.compareModeValue && normalize(currentFieldValue(config.modeField)) === normalize(config.compareModeValue);
+    let message = '';
+
+    if (isComparisonMode) {
+      const normalMinutes = getComparisonMinutesForWarning(config);
+      if (normalMinutes === null) {
+        hideHoursWarning(warning);
+        return;
+      }
+      const normalHours = normalMinutes / 60;
+      if (sameTime) {
+        message = 'Start and finish times are the same. Please check whether one of the adjusted workday times needs correcting.';
+      } else if (Math.abs(elapsedHours - normalHours) > tolerance) {
+        message = interpolateWarningMessage(
+          config.compareWarningMessage || 'The expected duration is {expected}, but the entered duration is {actual}. Please check the start and finish times.',
+          {
+            expected: formatHours(normalHours),
+            actual: formatHours(elapsedHours)
+          }
+        );
+      }
+
+      if (!message) {
+        hideHoursWarning(warning);
+        return;
+      }
+      warning.innerHTML = `<strong>${escapeHtml(config.compareWarningTitle || 'Check hours')}</strong><span>${escapeHtml(message)}</span>`;
+      warning.classList.remove('hidden');
+      return;
+    }
+
+    if (!inputUsableForWarning(hoursInput)) {
+      hideHoursWarning(warning);
+      return;
+    }
+
+    const enteredHours = Number(hoursInput.value);
+    if (!Number.isFinite(enteredHours) || enteredHours <= 0) {
+      hideHoursWarning(warning);
+      return;
+    }
+
+    const mealBreakContext = getMealBreakContext(config, elapsedMinutes);
+    const minimumMealBreakMinutes = mealBreakContext.minimumMealBreakMinutes;
+    const expectedAfterMealBreak = (elapsedMinutes - minimumMealBreakMinutes) / 60;
+
+    if (sameTime) {
+      message = 'Start and finish times are the same. Please check whether one of the times or the total hours needs correcting.';
+    } else if (enteredHours > elapsedHours + tolerance) {
+      message = `Start to finish is ${formatHours(elapsedHours)}, but the total entered is ${formatHours(enteredHours)}. Please check the total hours.`;
+    } else if (mealBreakContext.normalBreakLikelyCovered && enteredHours < elapsedHours - tolerance) {
+      message = `Start to finish is ${formatHours(elapsedHours)}, but the total entered is ${formatHours(enteredHours)}. Your regular shift appears to be over 5 hours, so the first meal break may already be covered there. If you deducted an additional unpaid break during overtime, this may be correct.`;
+    } else if (mealBreakContext.mealBreakSource === 'combined' && Math.abs(enteredHours - elapsedHours) <= tolerance) {
+      message = `Start to finish is ${formatHours(elapsedHours)}. Your regular shift plus overtime appears to be over 5 hours. Check whether the required 30 minute unpaid meal break has already been included in your regular shift or should be deducted from the overtime total.`;
+    } else if (mealBreakContext.mealBreakSource === 'overtime' && Math.abs(enteredHours - elapsedHours) <= tolerance) {
+      message = `Start to finish is ${formatHours(elapsedHours)}. Because this period is over 5 hours, check that the required 30 minute unpaid meal break has been deducted. The total after that break would usually be ${formatHours(expectedAfterMealBreak)}.`;
+    } else if (mealBreakContext.mealBreakSource === 'overtime' && enteredHours < expectedAfterMealBreak - tolerance) {
+      message = `Start to finish is ${formatHours(elapsedHours)}. After the required 30 minute unpaid meal break the total would usually be ${formatHours(expectedAfterMealBreak)}. If you deducted additional unpaid break time, this may be correct.`;
+    } else if (mealBreakContext.mealBreakSource === 'none' && Math.abs(enteredHours - elapsedHours) > tolerance) {
+      message = `Start to finish is ${formatHours(elapsedHours)}, but the total entered is ${formatHours(enteredHours)}. If you deducted unpaid break time, this may be correct; otherwise please check the total.`;
+    }
+
+    if (!message) {
+      hideHoursWarning(warning);
+      return;
+    }
+    warning.innerHTML = `<strong>Check total hours</strong><span>${escapeHtml(message)}</span>`;
+    warning.classList.remove('hidden');
+  }
+
+  function hoursWarningConfig(warning) {
+    const kind = warning.dataset.hoursWarning || 'planned';
+    return {
+      kind,
+      startField: warning.dataset.startField || `${kind}StartTime`,
+      finishField: warning.dataset.finishField || `${kind}FinishTime`,
+      hoursField: warning.dataset.hoursField || `${kind}Hours`,
+      modeField: warning.dataset.modeField || '',
+      compareModeValue: warning.dataset.compareModeValue || '',
+      compareWorkdayField: warning.dataset.compareWorkdayField || '',
+      compareStartField: warning.dataset.compareStartField || '',
+      compareFinishField: warning.dataset.compareFinishField || '',
+      compareWarningTitle: warning.dataset.compareWarningTitle || '',
+      compareWarningMessage: warning.dataset.compareWarningMessage || ''
+    };
+  }
+
+  function formInputByName(name) {
+    return name ? document.querySelector(`[name="${cssEscape(name)}"]`) : null;
+  }
+
+  function cssEscape(value) {
+    if (window.CSS && typeof CSS.escape === 'function') {
+      return CSS.escape(value);
+    }
+    return String(value).replace(/["\\]/g, '\\$&');
+  }
+
+  function currentFieldValue(fieldName) {
+    if (!fieldName) {
+      return '';
+    }
+    const checked = document.querySelector(`input[name="${cssEscape(fieldName)}"]:checked:not(:disabled)`);
+    if (checked) {
+      return checked.value;
+    }
+    const input = formInputByName(fieldName);
+    if (input && !input.disabled) {
+      return input.value;
+    }
+    return (state.request && state.request[fieldName]) || '';
+  }
+
+  function interpolateWarningMessage(template, values) {
+    return String(template || '').replace(/\{([^}]+)\}/g, (match, key) => values[key] || match);
+  }
+
+  function warningConditionVisible(warning) {
+    if (!warning) {
+      return false;
+    }
+    if (warning.dataset.conditionVisible === 'false') {
+      return false;
+    }
+    if (!warning.dataset.visibleWhen) {
+      return true;
+    }
+    const form = configuredFormElement();
+    const values = form ? collectCurrentFormValues(form) : Object.assign({}, state.request || {});
+    return conditionMatches(parseJsonAttribute(warning.dataset.visibleWhen), values);
+  }
+
+  function inputUsableForWarning(input) {
+    return Boolean(input && !input.disabled && !input.closest('.hidden'));
+  }
+
+  function getMealBreakContext(config, overtimeMinutes) {
+    const normalMinutes = getComparisonMinutesForWarning(config);
+    const hasNormalShift = normalMinutes !== null;
+    const normalBreakLikelyCovered = hasNormalShift && normalMinutes > 5 * 60;
+    if (normalBreakLikelyCovered) {
+      return {
+        minimumMealBreakMinutes: 0,
+        hasNormalShift,
+        normalBreakLikelyCovered,
+        mealBreakSource: 'covered'
+      };
+    }
+    const combinedMinutes = (hasNormalShift ? normalMinutes : 0) + overtimeMinutes;
+    if (hasNormalShift) {
+      return {
+        minimumMealBreakMinutes: 0,
+        hasNormalShift,
+        normalBreakLikelyCovered,
+        mealBreakSource: combinedMinutes > 5 * 60 ? 'combined' : 'none'
+      };
+    }
+    const mealBreakApplies = overtimeMinutes > 5 * 60;
+    return {
+      minimumMealBreakMinutes: mealBreakApplies ? 30 : 0,
+      hasNormalShift,
+      normalBreakLikelyCovered,
+      mealBreakSource: mealBreakApplies ? 'overtime' : 'none'
+    };
+  }
+
+  function getComparisonMinutesForWarning(config) {
+    if (config.compareWorkdayField && currentFieldValue(config.compareWorkdayField) !== 'Yes') {
+      return null;
+    }
+    const normalStart = currentFieldValue(config.compareStartField);
+    const normalFinish = currentFieldValue(config.compareFinishField);
+    const startMinutes = parseTimeToMinutes(normalStart);
+    const finishMinutes = parseTimeToMinutes(normalFinish);
+    if (startMinutes === null || finishMinutes === null || startMinutes === finishMinutes) {
+      return null;
+    }
+    let duration = finishMinutes - startMinutes;
+    if (duration < 0) {
+      duration += 24 * 60;
+    }
+    return duration;
+  }
+
+  function hideHoursWarning(warning) {
+    warning.classList.add('hidden');
+    warning.innerHTML = '';
+  }
+
+  function submitWithContainer(container, method, data, onSuccess) {
+    clearNotice();
+    setSubmitting(container, true);
+    runServer(method, data)
+      .then(result => {
+        setSubmitting(container, false);
+        if (!result || !result.ok) {
+          showNotice((result && result.message) || 'The action could not be completed.', 'error');
+          return;
+        }
+        onSuccess(result);
+      })
+      .catch(error => {
+        setSubmitting(container, false);
+        showNotice(error && error.message ? error.message : String(error), 'error');
+      });
+  }
+
+  function appUrl(mode, params) {
+    const query = Object.assign({ mode }, params || {});
+    const queryString = Object.keys(query)
+      .filter(key => query[key] !== undefined && query[key] !== null && query[key] !== '')
+      .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(query[key])}`)
+      .join('&');
+    const base = WEB_APP_URL || `${window.location.origin}${window.location.pathname}`;
+    return `${base}?${queryString}`;
+  }
+
+  function runServer(method, payload, timeoutMs) {
+    const progressHandle = beginServerProgress(method, payload || {});
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = callback => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        progressHandle.done();
+        callback();
+      };
+      const timeout = window.setTimeout(() => {
+        finish(() => reject(new Error('The dashboard request did not return. This usually means the web app needs to be redeployed, the signed-in Google account is not available to Apps Script, or the deployment URL is not the current /exec web app URL.')));
+      }, timeoutMs || 30000);
+
+      if (!window.google || !google.script || !google.script.run) {
+        finish(() => reject(new Error('google.script.run is not available. Open the deployed Apps Script web app URL, not the temporary preview or iframe URL.')));
+        return;
+      }
+
+      const runner = google.script.run
+        .withSuccessHandler(result => {
+          progressHandle.learn(result);
+          finish(() => resolve(result));
+        })
+        .withFailureHandler(error => {
+          finish(() => reject(error));
+        });
+      runner[method](payload);
+    });
+  }
+
+  function beginServerProgress(method, payload) {
+    activeProgressCount += 1;
+    const storageKey = progressEstimateStorageKey(method, payload || {});
+    const estimateMs = loadProgressEstimateMs(storageKey, method, payload || {});
+    showGlobalProgress(progressMessageForMethod(method, payload || {}), {
+      method,
+      storageKey,
+      estimateMs
+    });
+    return {
+      learn(result) {
+        saveProgressEstimateMs(storageKey, progressElapsedMs(), result);
+      },
+      done() {
+        activeProgressCount = Math.max(0, activeProgressCount - 1);
+        if (activeProgressCount === 0) {
+          hideGlobalProgress();
+        }
+      }
+    };
+  }
+
+  function progressMessageForMethod(method, payload) {
+    const messages = {
+      getDashboardData: 'Loading dashboard...',
+      submitRequest: 'Submitting request...',
+      submitEditedRequest: 'Submitting changes...',
+      submitActualHours: 'Submitting actual hours...',
+      submitVtrChecklist: 'Saving checklist...',
+      submitApprovalDecision: 'Recording decision...',
+      submitDashboardApprovalDecision: 'Recording decision...',
+      requesterCancelRequest: 'Cancelling request...',
+      adminCancelRequest: 'Cancelling request...',
+      adminSendReminder: 'Sending reminder...',
+      adminReassignRequest: 'Reassigning step...',
+      getAdminWorkflowManagementData: 'Loading approval flows...',
+      updateAdminWorkflowSettings: 'Saving workflow...'
+    };
+    if (method === 'submitVtrChecklist') {
+      return payload && payload.checklistAction === 'complete'
+        ? 'Completing checklist...'
+        : 'Saving checklist...';
+    }
+    return messages[method] || 'Working...';
+  }
+
+  function progressEstimateStorageKey(method, payload) {
+    if (method === 'getDashboardData') {
+      const role = (payload && payload.role) || 'dashboard';
+      const process = (payload && payload.process) || 'chooser';
+      const preload = payload && payload.preloadAdminDashboards ? 'preload' : 'single';
+      return `ofg-progress:${method}:${role}:${process}:${preload}`;
+    }
+    return `ofg-progress:${method}`;
+  }
+
+  function loadProgressEstimateMs(key, method, payload) {
+    try {
+      const stored = window.localStorage && window.localStorage.getItem(key);
+      const record = parseProgressEstimateRecord(stored);
+      if (record && Number.isFinite(record.estimateMs) && record.estimateMs >= 1000) {
+        return record.estimateMs;
+      }
+    } catch (error) {
+      // Local storage can be unavailable in restricted browser contexts.
+    }
+    return defaultProgressEstimateMs(method, payload || {});
+  }
+
+  function defaultProgressEstimateMs(method, payload) {
+    if (method === 'getDashboardData') {
+      if ((payload && payload.role) === 'admin' && !(payload && payload.process)) {
+        return payload && payload.preloadAdminDashboards ? 60000 : 12000;
+      }
+      if ((payload && payload.role) === 'admin') {
+        return 30000;
+      }
+      return 6000;
+    }
+    return 4000;
+  }
+
+  function saveProgressEstimateMs(key, elapsedMs, result) {
+    if (!key || !Number.isFinite(elapsedMs) || elapsedMs < 250) {
+      return;
+    }
+    const serverMs = result && result.performance && Number(result.performance.totalMs);
+    const measuredMs = Number.isFinite(serverMs) && serverMs > 0 ? Math.max(elapsedMs, serverMs) : elapsedMs;
+    const existing = readProgressEstimateRecord(key);
+    const samples = (existing && Array.isArray(existing.samples) ? existing.samples : [])
+      .concat([Math.round(measuredMs)])
+      .filter(value => Number.isFinite(Number(value)) && Number(value) >= 250)
+      .slice(-5);
+    const next = Math.round(samples.reduce((total, value) => total + Number(value), 0) / samples.length);
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(key, JSON.stringify({
+          estimateMs: Math.max(1000, Math.min(next, 60000)),
+          samples
+        }));
+      }
+    } catch (error) {
+      // Ignore storage failures; progress still uses defaults for this session.
+    }
+  }
+
+  function readProgressEstimateRecord(key) {
+    try {
+      return parseProgressEstimateRecord(window.localStorage && window.localStorage.getItem(key));
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function parseProgressEstimateRecord(value) {
+    if (!value) {
+      return null;
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return {
+        estimateMs: numeric,
+        samples: [numeric]
+      };
+    }
+    try {
+      const parsed = JSON.parse(value);
+      if (!parsed || typeof parsed !== 'object') {
+        return null;
+      }
+      return {
+        estimateMs: Number(parsed.estimateMs),
+        samples: Array.isArray(parsed.samples) ? parsed.samples.map(Number).filter(Number.isFinite) : []
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function bindGlobalLoadingIndicators() {
+    document.addEventListener('submit', event => {
+      if (!globalProgressIsVisible()) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+
+    document.addEventListener('keydown', event => {
+      if (!globalProgressIsVisible() || (event.key !== 'Enter' && event.key !== ' ')) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+
+    document.addEventListener('click', event => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      const link = event.target.closest('a[href]');
+      if (!link) {
+        return;
+      }
+      if (link.matches('[data-admin-process], [data-admin-process-chooser], [data-admin-export]') || link.hasAttribute('download')) {
+        return;
+      }
+      const href = link.getAttribute('href') || '';
+      const target = (link.getAttribute('target') || '').toLowerCase();
+      if (!href || href[0] === '#' || href.indexOf('javascript:') === 0 || href.indexOf('mailto:') === 0) {
+        return;
+      }
+      if (target && target !== '_self' && target !== '_top') {
+        return;
+      }
+      showGlobalProgress('Loading...');
+    }, true);
+
+    window.addEventListener('pageshow', event => {
+      if (!event.persisted) {
+        return;
+      }
+      activeProgressCount = 0;
+      hideGlobalProgress(true);
+    });
+  }
+
+  function showGlobalProgress(message, options) {
+    if (!globalProgress) {
+      return;
+    }
+    if (progressHideTimer) {
+      window.clearTimeout(progressHideTimer);
+      progressHideTimer = 0;
+    }
+    if (globalProgressLabel) {
+      globalProgressLabel.textContent = message || 'Loading...';
+    }
+    startProgressTicker(message || 'Loading...', options || {});
+    document.body.classList.add('is-loading');
+    globalProgress.hidden = false;
+    globalProgress.setAttribute('aria-hidden', 'false');
+  }
+
+  function startProgressTicker(message, options) {
+    progressStartedAt = Date.now();
+    progressBaseMessage = stripEllipsis(message || 'Loading');
+    progressMethod = options.method || '';
+    progressEstimateMs = Number(options.estimateMs || 0);
+    progressStorageKey = options.storageKey || '';
+    if (globalProgressBar) {
+      globalProgressBar.style.width = '0%';
+    }
+    if (progressTickTimer) {
+      window.clearInterval(progressTickTimer);
+    }
+    updateProgressTicker();
+    progressTickTimer = window.setInterval(updateProgressTicker, 1000);
+  }
+
+  function updateProgressTicker() {
+    if (!globalProgress || globalProgress.hidden || !progressStartedAt) {
+      return;
+    }
+    if (globalProgressLabel) {
+      globalProgressLabel.textContent = `${progressBaseMessage}...`;
+    }
+    const elapsedMs = progressElapsedMs();
+    const estimateMs = Math.max(1000, progressEstimateMs || defaultProgressEstimateMs(progressMethod, {}));
+    const progress = Math.min(0.96, Math.max(0.08, elapsedMs / estimateMs));
+    if (globalProgressBar) {
+      globalProgressBar.style.width = `${Math.round(progress * 100)}%`;
+    }
+    if (globalProgressHelp) {
+      globalProgressHelp.textContent = progressRemainingText(estimateMs, elapsedMs);
+    }
+  }
+
+  function progressElapsedMs() {
+    return progressStartedAt ? Math.max(0, Date.now() - progressStartedAt) : 0;
+  }
+
+  function progressRemainingText(estimateMs, elapsedMs) {
+    const remainingMs = estimateMs - elapsedMs;
+    if (remainingMs <= 750) {
+      return 'Almost done';
+    }
+    if (remainingMs < 10000) {
+      return `Estimated remaining: ${Math.ceil(remainingMs / 1000)}s`;
+    }
+    return `Estimated remaining: ${Math.ceil(remainingMs / 5000) * 5}s`;
+  }
+
+  function stripEllipsis(value) {
+    return String(value || '').replace(/\.*$/, '');
+  }
+
+  function hideGlobalProgress(immediate) {
+    if (!globalProgress) {
+      return;
+    }
+    if (progressHideTimer) {
+      window.clearTimeout(progressHideTimer);
+      progressHideTimer = 0;
+    }
+    const hide = () => {
+      if (progressTickTimer) {
+        window.clearInterval(progressTickTimer);
+        progressTickTimer = 0;
+      }
+      progressStartedAt = 0;
+      progressBaseMessage = '';
+      progressMethod = '';
+      progressEstimateMs = 0;
+      progressStorageKey = '';
+      if (globalProgressBar) {
+        globalProgressBar.style.width = '0%';
+      }
+      if (globalProgressHelp) {
+        globalProgressHelp.textContent = '';
+      }
+      globalProgress.hidden = true;
+      globalProgress.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('is-loading');
+    };
+    if (immediate) {
+      hide();
+      return;
+    }
+    progressHideTimer = window.setTimeout(hide, 120);
+  }
+
+  function globalProgressIsVisible() {
+    return Boolean(globalProgress && !globalProgress.hidden);
+  }
+
+  function collectForm(form) {
+    form.querySelectorAll('[data-time-input]').forEach(input => {
+      input.value = normalizeTimeValue(input.value);
+    });
+    const data = {};
+    const fd = new FormData(form);
+    fd.forEach((value, key) => {
+      data[key] = value;
+    });
+    form.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      data[input.name] = input.checked;
+    });
+    return data;
+  }
+
+  function setSubmitting(container, submitting) {
+    container.querySelectorAll('button, input, select, textarea').forEach(element => {
+      element.disabled = submitting;
+    });
+  }
+
+  function checkedValue(name) {
+    const checked = document.querySelector(`input[name="${name}"]:checked`);
+    return checked ? checked.value : '';
+  }
+
+  function field(name, label, type, value, required, help, className, attributes, inputAttributes) {
+    const step = type === 'number' ? ' step="0.01" min="0"' : '';
+    const fieldValue = type === 'date' && !value ? todayDateKey() : value;
+    if (type === 'date') {
+      return `
+        <label class="field ${className || ''}" ${attributes || ''}>
+          <span>${escapeHtml(label)}</span>
+          <div class="date-picker" data-date-picker>
+            <input name="${escapeHtml(name)}" type="text" value="${escapeHtml(fieldValue || '')}" ${required ? 'required' : ''} ${inputAttributes || ''} readonly data-date-input>
+            <div class="date-popover hidden" data-date-popover></div>
+          </div>
+          ${help ? `<span class="help">${escapeHtml(help)}</span>` : ''}
+        </label>
+      `;
+    }
+    if (type === 'time') {
+      return `
+        <label class="field ${className || ''}" ${attributes || ''}>
+          <span>${escapeHtml(label)}</span>
+          <div class="time-picker" data-time-picker>
+            <input name="${escapeHtml(name)}" type="text" value="${escapeHtml(fieldValue || '')}" ${required ? 'required' : ''} ${inputAttributes || ''} placeholder="HH:MM" inputmode="numeric" autocomplete="off" pattern="^([01]\\d|2[0-3]):[0-5]\\d$" data-time-input>
+            <div class="time-popover hidden" data-time-popover></div>
+          </div>
+          ${help ? `<span class="help">${escapeHtml(help)}</span>` : ''}
+        </label>
+      `;
+    }
+    return `
+      <label class="field ${className || ''}" ${attributes || ''}>
+        <span>${escapeHtml(label)}</span>
+        <input name="${escapeHtml(name)}" type="${escapeHtml(type)}" value="${escapeHtml(fieldValue || '')}" ${required ? 'required' : ''} ${inputAttributes || ''}${step}>
+        ${help ? `<span class="help">${escapeHtml(help)}</span>` : ''}
+      </label>
+    `;
+  }
+
+  function selectField(name, label, options, selectedValue, required, help, className, attributes, inputAttributes) {
+    return `
+      <label class="field ${className || ''}" ${attributes || ''}>
+        <span>${escapeHtml(label)}</span>
+        <select name="${escapeHtml(name)}" ${required ? 'required' : ''} ${inputAttributes || ''}>
+          <option value="">Select...</option>
+          ${selectOptions(options, selectedValue || '')}
+        </select>
+        ${help ? `<span class="help">${escapeHtml(help)}</span>` : ''}
+      </label>
+    `;
+  }
+
+  function renderVtrRequestSummary(request) {
+    const rows = [
+      ['Request ID', request.requestId],
+      ['Form', request.processName || request.processType],
+      ['Submitted', formatDateTime(request.createdAt)],
+      ['Organiser', employeeLabel(request)],
+      ['Status', request.statusLabel || request.status],
+      ['Waiting On', request.waitingOnLabel],
+      ['Event Name', request.eventName],
+      ['Event Date(s)', formatVtrEventDateRange(request)],
+      ['School Area', request.schoolArea],
+      ['Event Type', request.eventType],
+      ['Event Location', request.eventLocation],
+      ['Event Times', request.eventTimes],
+      ['Students Involved', request.studentsInvolved],
+      ['Staff Required', request.staffRequired],
+      ['Risk Assessment Required', request.riskAssessmentRequired],
+      ['Logistics Notified', request.logisticsNotified],
+      ['Cost To Students', request.costToStudents],
+      ['Offsite Excursion', request.offsiteExcursion],
+      ['Checklist Last Saved', formatDateTime(request.checklistSubmittedAt)],
+      ['Checklist Completed', formatDateTime(request.checklistCompletedAt)]
+    ];
+
+    if (request.changeComment) {
+      rows.push(['Change Request', request.changeComment]);
+    }
+    if (request.lastEditedAt) {
+      rows.push(['Last Edited', formatDateTime(request.lastEditedAt)]);
+    }
+
+    rows.push(['Risk Assessment Completed', request.riskAssessmentCompleted]);
+    rows.push(['WWCC Requirements Confirmed', request.wwccConfirmed]);
+    rows.push(['Budget Submitted', request.budgetSubmitted]);
+    rows.push(['Grounds / IT Consulted', request.groundsItConsulted]);
+    rows.push(['Grounds After Hours Notified', request.groundsAfterHoursNotified]);
+    rows.push(['Sport and PDHPE Consulted', request.sportPdhpeConsulted]);
+    rows.push(['Chaplaincy Consulted', request.chaplaincyConsulted]);
+    rows.push(['Canteen / Cafe Notified', request.canteenNotified]);
+    rows.push(['Parent Letter Checked', request.parentLetterChecked]);
+    rows.push(['Parent Letter Provided To Reception', request.parentLetterProvided]);
+    rows.push(['Staff Notified', request.staffNotified]);
+    rows.push(['Buses Booked', request.busesBooked]);
+    rows.push(['Marketing Notified', request.marketingNotified]);
+
+    if (request.offsiteExcursion === 'Yes') {
+      rows.push(['Attending Staff Briefed', request.attendingStaffBriefed]);
+      rows.push(['Medical Needs Compiled', request.medicalNeedsCompiled]);
+      rows.push(['Lesson Plans Left', request.lessonPlansLeft]);
+      rows.push(['Rolls Marked / Reception Notified', request.rollsMarkedReceptionNotified]);
+    }
+
+    return `
+      <table class="summary">
+        <tbody>
+          ${rows.filter(row => row[1] !== undefined && row[1] !== null && row[1] !== '').map(row => `<tr><th>${escapeHtml(row[0])}</th><td>${escapeHtml(row[1])}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function enhanceDatePickers() {
+    document.querySelectorAll('[data-date-picker]').forEach(picker => {
+      if (picker.dataset.bound === 'true') {
+        return;
+      }
+      picker.dataset.bound = 'true';
+      const input = picker.querySelector('[data-date-input]');
+
+      input.addEventListener('click', event => {
+        event.stopPropagation();
+        openDatePicker(picker);
+      });
+      input.addEventListener('focus', () => openDatePicker(picker));
+    });
+
+    if (!window.datePickerGlobalBound) {
+      window.datePickerGlobalBound = true;
+      document.addEventListener('click', () => closeDatePickers());
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          closeDatePickers();
+        }
+      });
+    }
+  }
+
+  function openDatePicker(picker) {
+    closeDatePickers(picker);
+    const input = picker.querySelector('[data-date-input]');
+    const date = parseDateKey(input.value) || new Date();
+    const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
+    picker.dataset.visibleMonth = dateKey(monthDate);
+    renderDatePicker(picker);
+    picker.querySelector('[data-date-popover]').classList.remove('hidden');
+  }
+
+  function closeDatePickers(except) {
+    document.querySelectorAll('[data-date-picker]').forEach(picker => {
+      if (except && picker === except) {
+        return;
+      }
+      picker.querySelector('[data-date-popover]').classList.add('hidden');
+    });
+  }
+
+  function enhanceTimePickers() {
+    document.querySelectorAll('[data-time-picker]').forEach(picker => {
+      if (picker.dataset.bound === 'true') {
+        return;
+      }
+      picker.dataset.bound = 'true';
+      const input = picker.querySelector('[data-time-input]');
+
+      input.addEventListener('click', event => {
+        event.stopPropagation();
+        openTimePicker(picker);
+      });
+      input.addEventListener('focus', () => openTimePicker(picker));
+      input.addEventListener('input', () => {
+        normalizeTimeInputSoft(input);
+        if (!picker.querySelector('[data-time-popover]').classList.contains('hidden')) {
+          renderTimePicker(picker);
+        }
+      });
+      input.addEventListener('blur', () => {
+        input.value = normalizeTimeValue(input.value);
+      });
+    });
+
+    if (!window.timePickerGlobalBound) {
+      window.timePickerGlobalBound = true;
+      document.addEventListener('click', () => closeTimePickers());
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          closeTimePickers();
+        }
+      });
+    }
+  }
+
+  function openTimePicker(picker) {
+    closeTimePickers(picker);
+    renderTimePicker(picker);
+    picker.querySelector('[data-time-popover]').classList.remove('hidden');
+  }
+
+  function closeTimePickers(except) {
+    document.querySelectorAll('[data-time-picker]').forEach(picker => {
+      if (except && picker === except) {
+        return;
+      }
+      picker.querySelector('[data-time-popover]').classList.add('hidden');
+    });
+  }
+
+  function renderTimePicker(picker) {
+    const input = picker.querySelector('[data-time-input]');
+    const popover = picker.querySelector('[data-time-popover]');
+    const selected = normalizeTimeValue(input.value);
+    const options = [];
+    const optionMinutes = [];
+    for (let minutes = 5 * 60; minutes < 24 * 60; minutes += 15) {
+      optionMinutes.push(minutes);
+    }
+    for (let minutes = 0; minutes < 5 * 60; minutes += 15) {
+      optionMinutes.push(minutes);
+    }
+    optionMinutes.forEach(minutes => {
+      const value = minutesToTime(minutes);
+      options.push(`<button class="time-option ${value === selected ? 'selected' : ''}" type="button" data-time-option="${value}">${value}</button>`);
+    });
+    popover.innerHTML = `
+      <div class="time-options">
+        ${options.join('')}
+      </div>
+      <div class="time-popover-actions">
+        <button class="button primary time-confirm" type="button" data-time-confirm>OK</button>
+      </div>
+    `;
+    popover.querySelectorAll('[data-time-option]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        input.value = event.currentTarget.dataset.timeOption;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        popover.querySelectorAll('[data-time-option]').forEach(option => {
+          option.classList.toggle('selected', option === event.currentTarget);
+        });
+      });
+    });
+    popover.querySelector('[data-time-confirm]').addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      input.value = normalizeTimeValue(input.value);
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      closeTimePickers();
+    });
+    const selectedButton = popover.querySelector('.time-option.selected');
+    if (selectedButton) {
+      selectedButton.scrollIntoView({ block: 'center' });
+    }
+  }
+
+  function normalizeTimeInputSoft(input) {
+    input.value = input.value.replace(/[^\d:]/g, '').slice(0, 5);
+  }
+
+  function normalizeTimeValue(value) {
+    const text = String(value || '').trim();
+    const compact = text.match(/^(\d{1,2})(\d{2})$/);
+    const colon = text.match(/^(\d{1,2}):(\d{1,2})$/);
+    const match = colon || compact;
+    if (!match) {
+      return text;
+    }
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+      return text;
+    }
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  }
+
+  function parseTimeToMinutes(value) {
+    const normalized = normalizeTimeValue(value);
+    const match = String(normalized || '').match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+    if (!match) {
+      return null;
+    }
+    return Number(match[1]) * 60 + Number(match[2]);
+  }
+
+  function formatHours(value) {
+    const rounded = Math.round(Number(value) * 100) / 100;
+    const text = Number.isInteger(rounded) ? String(rounded) : String(rounded.toFixed(2)).replace(/0+$/, '').replace(/\.$/, '');
+    return `${text} ${rounded === 1 ? 'hour' : 'hours'}`;
+  }
+
+  function formatDuration(milliseconds) {
+    const ms = Math.max(0, Number(milliseconds) || 0);
+    if (ms < 1000) {
+      return `${Math.round(ms)}ms`;
+    }
+    return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+  }
+
+  function minutesToTime(minutes) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+  }
+
+  function renderDatePicker(picker) {
+    const input = picker.querySelector('[data-date-input]');
+    const popover = picker.querySelector('[data-date-popover]');
+    const selected = parseDateKey(input.value) || new Date();
+    const visible = parseDateKey(picker.dataset.visibleMonth) || new Date();
+    const monthStart = new Date(visible.getFullYear(), visible.getMonth(), 1);
+    const firstGridDate = new Date(monthStart);
+    firstGridDate.setDate(firstGridDate.getDate() - ((monthStart.getDay() + 6) % 7));
+    const todayKeyValue = todayDateKey();
+    const selectedKey = dateKey(selected);
+    const monthLabel = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(monthStart);
+    const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const days = [];
+
+    for (let index = 0; index < 42; index += 1) {
+      const current = new Date(firstGridDate);
+      current.setDate(firstGridDate.getDate() + index);
+      const key = dateKey(current);
+      const classes = [
+        'calendar-day',
+        current.getMonth() === monthStart.getMonth() ? '' : 'outside',
+        key === todayKeyValue ? 'today' : '',
+        key === selectedKey ? 'selected' : ''
+      ].filter(Boolean).join(' ');
+      days.push(`<button class="${classes}" type="button" data-date-option="${key}">${current.getDate()}</button>`);
+    }
+
+    popover.innerHTML = `
+      <div class="calendar-head">
+        <button type="button" data-date-nav="-1" aria-label="Previous month">&lt;</button>
+        <strong>${escapeHtml(monthLabel)}</strong>
+        <button type="button" data-date-nav="1" aria-label="Next month">&gt;</button>
+      </div>
+      <div class="calendar-grid calendar-weekdays">
+        ${weekdays.map(day => `<span>${day}</span>`).join('')}
+      </div>
+      <div class="calendar-grid">
+        ${days.join('')}
+      </div>
+    `;
+
+    popover.querySelectorAll('[data-date-nav]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const offset = Number(event.currentTarget.dataset.dateNav);
+        const next = new Date(monthStart.getFullYear(), monthStart.getMonth() + offset, 1);
+        picker.dataset.visibleMonth = dateKey(next);
+        renderDatePicker(picker);
+      });
+    });
+
+    popover.querySelectorAll('[data-date-option]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        input.value = event.currentTarget.dataset.dateOption;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        closeDatePickers();
+      });
+    });
+  }
+
+  function todayDateKey() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function dateKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function parseDateKey(value) {
+    const parts = String(value || '').split('-').map(Number);
+    if (parts.length !== 3 || parts.some(part => !Number.isFinite(part))) {
+      return null;
+    }
+    const date = new Date(parts[0], parts[1] - 1, parts[2]);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function optionValue(option) {
+    if (option && typeof option === 'object') {
+      return String(option.value || option.label || '');
+    }
+    return String(option || '');
+  }
+
+  function optionLabel(option) {
+    if (option && typeof option === 'object') {
+      return String(option.label || option.value || '');
+    }
+    return String(option || '');
+  }
+
+  function radio(name, value, checked, inputAttributes, required) {
+    return `
+      <label class="choice">
+        <input type="radio" name="${escapeHtml(name)}" value="${escapeHtml(value)}" ${checked ? 'checked' : ''} ${required ? 'required' : ''} ${inputAttributes || ''}>
+        <span>${escapeHtml(value)}</span>
+      </label>
+    `;
+  }
+
+  function choiceCardOption(name, option, selectedValue, inputAttributes, required, request) {
+    const value = optionValue(option);
+    const label = optionLabel(option);
+    const summary = option && typeof option === 'object' ? option.summary : '';
+    const detailHtml = option && typeof option === 'object' ? option.detailHtml : '';
+    const visibleWhen = option && typeof option === 'object' ? option.visibleWhen : null;
+    const visible = visibleWhen ? conditionMatches(visibleWhen, Object.assign({}, request || {})) : true;
+    const conditionalAttributes = visibleWhen ? `data-visible-when="${escapeHtml(JSON.stringify(visibleWhen))}"` : '';
+    const optionClass = ['compensation-option', visibleWhen ? 'conditional-field' : '', visible ? '' : 'hidden'].filter(Boolean).join(' ');
+    const checked = value === selectedValue;
+    return `
+      <div class="${optionClass} ${checked && visible ? 'selected' : ''}" ${conditionalAttributes}>
+        <label>
+          <input type="radio" name="${escapeHtml(name)}" value="${escapeHtml(value)}" ${checked ? 'checked' : ''} ${required ? 'required' : ''} ${inputAttributes || ''} ${visible ? '' : 'disabled data-conditional-disabled="true"'}>
+          <span>
+            <strong>${escapeHtml(label)}</strong>
+            ${summary ? `<small>${escapeHtml(summary)}</small>` : ''}
+          </span>
+        </label>
+        ${detailHtml ? `<button class="button secondary" type="button" data-compensation-details>Details</button>` : ''}
+        ${detailHtml ? `<div class="compensation-detail hidden">${detailHtml}</div>` : ''}
+      </div>
+    `;
+  }
+
+  function selectOptions(options, selectedValue) {
+    return options
+      .map(option => {
+        const value = optionValue(option);
+        return `<option value="${escapeHtml(value)}" ${value === selectedValue ? 'selected' : ''}>${escapeHtml(optionLabel(option))}</option>`;
+      })
+      .join('');
+  }
+
+  function employeeLabel(request) {
+    if (!request.employeeName && !request.employeeEmail) {
+      return '';
+    }
+    return `${request.employeeName || ''}${request.employeeEmail ? ` <${request.employeeEmail}>` : ''}`;
+  }
+
+  function requestDisplayDate(request) {
+    if (request && request.processType === 'vtr') {
+      return vtrEventStartDate(request);
+    }
+    return request.eventDate || request.overtimeDate || '';
+  }
+
+  function requestDisplayDateLabel(request) {
+    if (request && request.processType === 'vtr') {
+      return formatVtrEventDateRange(request);
+    }
+    return formatDate(requestDisplayDate(request));
+  }
+
+  function vtrEventStartDate(request) {
+    return (request && (request.eventStartDate || request.eventDate)) || '';
+  }
+
+  function vtrEventEndDate(request) {
+    return (request && (request.eventEndDate || request.eventDate || request.eventStartDate)) || '';
+  }
+
+  function formatVtrEventDateRange(request) {
+    const start = vtrEventStartDate(request);
+    const end = vtrEventEndDate(request);
+    if (start && end && start !== end) {
+      return `${formatDate(start)} to ${formatDate(end)}`;
+    }
+    return formatDate(start || end);
+  }
+
+  function showNotice(message, type) {
+    notice.hidden = false;
+    notice.className = `notice ${type || ''}`;
+    notice.textContent = message;
+    notice.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function clearNotice() {
+    notice.hidden = true;
+    notice.className = 'notice';
+    notice.textContent = '';
+  }
+
+  function formatDate(value) {
+    if (!value) return '';
+    const parts = String(value).split('-');
+    if (parts.length !== 3) return value;
+    const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    return new Intl.DateTimeFormat('en-AU', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric'
+    }).format(date);
+  }
+
+  function formatDateTime(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('en-AU', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date);
+  }
+
+  function escapeHtml(value) {
+    return String(value === null || value === undefined ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+</script>

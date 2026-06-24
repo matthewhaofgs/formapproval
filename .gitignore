@@ -1,0 +1,45 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Local operational context and source data
+SERVER_CONTEXT.md
+*.local.md
+reference-data/
+Support Staff Overtime Approval Form (Draft).pdf
+*.dump
+*.backup
+*.sql
+
+# Node and Python local artifacts
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Apps Script local tooling artifacts
+.clasp.json
+.clasprc.json
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local certificates and keys
+*.pem
+*.key
+*.p12

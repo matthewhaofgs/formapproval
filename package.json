@@ -1,0 +1,14 @@
+{
+  "name": "formapproval",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "test:live": "LIVE_FORM_TESTS=1 node --test tests/live-form-regression.test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.0"
+  }
+}

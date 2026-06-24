@@ -1,0 +1,10 @@
+[Unit]
+Description=Run OFG Forms weekly pending-reminder job
+
+[Timer]
+OnCalendar=Mon 08:00 Australia/Sydney
+Persistent=true
+Unit=formapproval-weekly-reminders.service
+
+[Install]
+WantedBy=timers.target
