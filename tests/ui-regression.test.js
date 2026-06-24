@@ -417,6 +417,8 @@ test('request summaries and email summaries include the submitted timestamp once
 test('request summaries separate pre-approval details from actual-hours confirmation', () => {
   assert.match(js, /\{ section: 'Pre-approval request' \}/);
   assert.match(js, /\{ section: 'Actual hours confirmation' \}/);
+  assert.match(js, /\{ section: 'VTR request details' \}/);
+  assert.match(js, /\{ section: 'VTR checklist' \}/);
   assert.match(js, /function renderSummaryRow\(row\)/);
   assert.match(js, /class="summary-section"/);
   assert.match(css, /\.summary \.summary-section th\s*\{/);

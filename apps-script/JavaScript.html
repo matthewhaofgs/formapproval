@@ -4111,6 +4111,7 @@
       ['Organiser', employeeLabel(request)],
       ['Status', request.statusLabel || request.status],
       ['Waiting On', request.waitingOnLabel],
+      { section: 'VTR request details' },
       ['Event Name', request.eventName],
       ['Event Date(s)', formatVtrEventDateRange(request)],
       ['School Area', request.schoolArea],
@@ -4122,9 +4123,7 @@
       ['Risk Assessment Required', request.riskAssessmentRequired],
       ['Logistics Notified', request.logisticsNotified],
       ['Cost To Students', request.costToStudents],
-      ['Offsite Excursion', request.offsiteExcursion],
-      ['Checklist Last Saved', formatDateTime(request.checklistSubmittedAt)],
-      ['Checklist Completed', formatDateTime(request.checklistCompletedAt)]
+      ['Offsite Excursion', request.offsiteExcursion]
     ];
 
     if (request.changeComment) {
@@ -4134,32 +4133,41 @@
       rows.push(['Last Edited', formatDateTime(request.lastEditedAt)]);
     }
 
-    rows.push(['Risk Assessment Completed', request.riskAssessmentCompleted]);
-    rows.push(['WWCC Requirements Confirmed', request.wwccConfirmed]);
-    rows.push(['Budget Submitted', request.budgetSubmitted]);
-    rows.push(['Grounds Consulted', request.groundsConsulted]);
-    rows.push(['IT Consulted', request.itConsulted]);
-    rows.push(['Grounds After Hours Notified', request.groundsAfterHoursNotified]);
-    rows.push(['Sport and PDHPE Consulted', request.sportPdhpeConsulted]);
-    rows.push(['Chaplaincy Consulted', request.chaplaincyConsulted]);
-    rows.push(['Canteen / Cafe Notified', request.canteenNotified]);
-    rows.push(['Parent Letter Checked', request.parentLetterChecked]);
-    rows.push(['Parent Letter Provided To Reception', request.parentLetterProvided]);
-    rows.push(['Staff Notified', request.staffNotified]);
-    rows.push(['Buses Booked', request.busesBooked]);
-    rows.push(['Marketing Notified', request.marketingNotified]);
+    const checklistRows = [
+      ['Checklist Last Saved', formatDateTime(request.checklistSubmittedAt)],
+      ['Checklist Completed', formatDateTime(request.checklistCompletedAt)],
+      ['Risk Assessment Completed', request.riskAssessmentCompleted],
+      ['WWCC Requirements Confirmed', request.wwccConfirmed],
+      ['Budget Submitted', request.budgetSubmitted],
+      ['Grounds Consulted', request.groundsConsulted],
+      ['IT Consulted', request.itConsulted],
+      ['Grounds After Hours Notified', request.groundsAfterHoursNotified],
+      ['Sport and PDHPE Consulted', request.sportPdhpeConsulted],
+      ['Chaplaincy Consulted', request.chaplaincyConsulted],
+      ['Canteen / Cafe Notified', request.canteenNotified],
+      ['Parent Letter Checked', request.parentLetterChecked],
+      ['Parent Letter Provided To Reception', request.parentLetterProvided],
+      ['Staff Notified', request.staffNotified],
+      ['Buses Booked', request.busesBooked],
+      ['Marketing Notified', request.marketingNotified]
+    ];
 
     if (request.offsiteExcursion === 'Yes') {
-      rows.push(['Attending Staff Briefed', request.attendingStaffBriefed]);
-      rows.push(['Medical Needs Compiled', request.medicalNeedsCompiled]);
-      rows.push(['Lesson Plans Left', request.lessonPlansLeft]);
-      rows.push(['Rolls Marked / Reception Notified', request.rollsMarkedReceptionNotified]);
+      checklistRows.push(['Attending Staff Briefed', request.attendingStaffBriefed]);
+      checklistRows.push(['Medical Needs Compiled', request.medicalNeedsCompiled]);
+      checklistRows.push(['Lesson Plans Left', request.lessonPlansLeft]);
+      checklistRows.push(['Rolls Marked / Reception Notified', request.rollsMarkedReceptionNotified]);
+    }
+
+    if (checklistRows.some(summaryRowHasValue)) {
+      rows.push({ section: 'VTR checklist' });
+      rows.push(...checklistRows);
     }
 
     return `
       <table class="summary">
         <tbody>
-          ${rows.filter(row => row[1] !== undefined && row[1] !== null && row[1] !== '').map(row => `<tr><th>${escapeHtml(row[0])}</th><td>${escapeHtml(row[1])}</td></tr>`).join('')}
+          ${rows.filter(summaryRowHasValue).map(renderSummaryRow).join('')}
         </tbody>
       </table>
     `;
