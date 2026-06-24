@@ -244,6 +244,12 @@ test('obsolete admin skip and code-level workflow override paths are removed', (
 test('generic workflow stage is approval, with pre-approval only as overtime copy', () => {
   assert.match(js, /'approval'/);
   assert.match(js, /approvalWorkflowSteps/);
+  assert.match(js, /checklistWorkflowSteps/);
+  assert.match(js, /checklistNotificationHistory/);
+  assert.match(js, /role === 'admin' \|\| role === 'requester' \? renderRequestWorkflow\(request\) : renderHistory\(request\)/);
+  assert.match(js, /function renderChecklistWorkflow\(request\)/);
+  assert.match(js, /VTR checklist notifications/);
+  assert.match(js, /function workflowHistoryBuckets\(steps, history\)/);
   assert.doesNotMatch(js, /preapprovalWorkflowSteps/);
   assert.doesNotMatch(js, /activeApprovalStage === 'preapproval'/);
   assert.equal(JSON.stringify(liveForms).includes('preapprovalAdjustmentFields'), false);

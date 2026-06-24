@@ -449,6 +449,7 @@ function submitActualHours(payload) {
       status: STATUS.PENDING_FINAL_APPROVAL,
       updatedAt: nowIso_(),
       actualSubmittedAt: nowIso_(),
+      finalWorkflowSteps: '[]',
       employeeActionTokenHash: '',
       activeApprovalTokenHash: '',
       activeApprovalStage: '',
@@ -552,8 +553,8 @@ function submitVtrChecklist(payload) {
       requestId: request.requestId,
       request: publicRequest_(request),
       message: checklistAction === 'complete'
-        ? `Checklist completed for request ${request.requestId}. It remains editable until after ${vtrEventDateRangeForEmail_(request)}.`
-        : `Checklist saved for request ${request.requestId}. It remains editable until after ${vtrEventDateRangeForEmail_(request)}.`
+        ? `Checklist completed for request ${request.requestId}. It remains editable through ${vtrChecklistEditableUntilForEmail_(request)}.`
+        : `Checklist saved for request ${request.requestId}. It remains editable through ${vtrChecklistEditableUntilForEmail_(request)}.`
     };
   } finally {
     lock.releaseLock();
@@ -604,6 +605,10 @@ function submitEditedRequest(payload) {
       updatedAt: nowIso_(),
       followUpDueDate: cleaned.overtimeDate ? addDaysKey_(cleaned.overtimeDate, 1) : '',
       followUpSentAt: '',
+      approvalWorkflowSteps: '[]',
+      finalWorkflowSteps: '[]',
+      checklistWorkflowSteps: '[]',
+      checklistNotificationHistory: '[]',
       employeeActionTokenHash: '',
       approvalCompletedAt: '',
       actualSubmittedAt: '',
@@ -726,7 +731,8 @@ function getDashboardData(payload) {
   }
   markDashboardTiming_(timing, 'visibility filtering');
 
-  const records = dashboardRecords_(requests, role, actorEmail, approverEventRequestIds);
+  const checklistNotificationsByRequest = checklistNotificationHistoryByRequest_(requests);
+  const records = dashboardRecords_(requests, role, actorEmail, approverEventRequestIds, checklistNotificationsByRequest);
   markDashboardTiming_(timing, 'dashboard rendering data');
 
   return {
@@ -756,7 +762,7 @@ function adminDashboardBundle_(email) {
 
   getAdminProcessOptionsFor_(email).forEach(function (process) {
     const requests = getRequestsForProcess_(process.key);
-    const records = dashboardRecords_(requests, 'admin', email, {});
+    const records = dashboardRecords_(requests, 'admin', email, {}, checklistNotificationHistoryByRequest_(requests));
     adminProcesses.push(Object.assign({}, process, {
       requestCount: requests.length,
       pendingCount: requests.filter(function (request) { return isPendingStatus_(request.status); }).length,
@@ -784,14 +790,51 @@ function adminDashboardBundle_(email) {
   };
 }
 
-function dashboardRecords_(requests, role, actorEmail, approverEventRequestIds) {
+function dashboardRecords_(requests, role, actorEmail, approverEventRequestIds, checklistNotificationsByRequest) {
   return requests
     .map(function (request) {
-      return dashboardRequest_(request, role, actorEmail, approverEventRequestIds || {});
+      return dashboardRequest_(
+        request,
+        role,
+        actorEmail,
+        approverEventRequestIds || {},
+        checklistNotificationsByRequest || {}
+      );
     })
     .sort(function (a, b) {
       return String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''));
     });
+}
+
+function checklistNotificationHistoryByRequest_(requests) {
+  const requestIds = {};
+  (requests || []).forEach(function (request) {
+    if (request && request.requestId) {
+      requestIds[request.requestId] = true;
+    }
+  });
+  if (!Object.keys(requestIds).length) {
+    return {};
+  }
+
+  const byRequest = {};
+  getAllEvents_().forEach(function (eventRecord) {
+    if (eventRecord.event !== 'CHECKLIST_NOTIFICATION_SENT' || !requestIds[eventRecord.requestId]) {
+      return;
+    }
+    const details = parseJsonObject_(eventRecord.detailsJson);
+    const entry = {
+      at: dateTimeCellValue_(eventRecord.timestamp),
+      stepName: details.stepName || 'Checklist notification',
+      stepType: 'notification',
+      approverEmail: '',
+      recipients: [].concat(details.recipients || []).map(normalizeEmail_).filter(Boolean),
+      decision: 'notification sent'
+    };
+    byRequest[eventRecord.requestId] = byRequest[eventRecord.requestId] || [];
+    byRequest[eventRecord.requestId].push(entry);
+  });
+  return byRequest;
 }
 
 function adminProcessesWithCounts_(email) {
@@ -1103,13 +1146,13 @@ function normalizeVtrChecklistAction_(value) {
 }
 
 function vtrChecklistShouldClose_(request) {
-  const eventEndDate = vtrEventEndDate_(request);
+  const editableUntilDate = vtrChecklistEditableUntilDate_(request);
   return requestNeedsVtrChecklist_(request) &&
     Boolean(request.checklistCompletedAt) &&
     !request.activeApprovalStage &&
     !request.activeApprovalStepEmail &&
-    Boolean(eventEndDate) &&
-    eventEndDate < todayKey_();
+    Boolean(editableUntilDate) &&
+    editableUntilDate < todayKey_();
 }
 
 function closeVtrChecklist_(request, actorEmail, notificationsSent) {
@@ -1150,26 +1193,44 @@ function closeDueVtrChecklistsInternal_() {
 }
 
 function sendChecklistWorkflowNotifications_(request, actorEmail) {
-  const steps = resolveWorkflowSteps_(workflowConfigForStage_('checklist', request), request)
+  const steps = refreshWorkflowStepsSnapshot_(request, 'checklist')
     .filter(function (step) {
-      return step.type === 'notification' && !checklistNotificationAlreadySent_(request.requestId, step.name);
+      return step.type === 'notification' && !checklistNotificationAlreadySent_(request, step.name);
     });
+  let sent = 0;
 
   steps.forEach(function (step) {
     const notification = sendWorkflowNotificationEmail_(request, step, 'checklist');
     if (!notification) {
       return;
     }
+    appendHistory_(request, 'checklistNotificationHistory', {
+      at: nowIso_(),
+      stepName: step.name,
+      stepIndex: step.index,
+      stepOriginalIndex: step.originalIndex,
+      stepType: 'notification',
+      approverEmail: '',
+      recipients: notification.recipients,
+      decision: 'notification sent'
+    });
     logEvent_(request.requestId, actorEmail || 'system', 'CHECKLIST_NOTIFICATION_SENT', {
       stepName: step.name,
       recipients: notification.recipients
     });
+    sent += 1;
   });
 
-  return steps.length;
+  return sent;
 }
 
-function checklistNotificationAlreadySent_(requestId, stepName) {
+function checklistNotificationAlreadySent_(request, stepName) {
+  if (parseJsonArray_(request.checklistNotificationHistory).some(function (entry) {
+    return trim_(entry.stepName).toLowerCase() === trim_(stepName).toLowerCase();
+  })) {
+    return true;
+  }
+  const requestId = request.requestId;
   return getAllEvents_().some(function (eventRecord) {
     if (eventRecord.requestId !== requestId || eventRecord.event !== 'CHECKLIST_NOTIFICATION_SENT') {
       return false;
@@ -1177,6 +1238,30 @@ function checklistNotificationAlreadySent_(requestId, stepName) {
     const details = parseJsonObject_(eventRecord.detailsJson);
     return details.stepName === stepName;
   });
+}
+
+function mergeChecklistNotificationHistory_(storedHistory, eventHistory) {
+  const seen = {};
+  return []
+    .concat(storedHistory || [])
+    .concat(eventHistory || [])
+    .filter(function (entry) {
+      const recipients = [].concat(entry.recipients || []).map(normalizeEmail_).filter(Boolean).sort().join(',');
+      const key = [
+        trim_(entry.stepName).toLowerCase(),
+        trim_(entry.decision).toLowerCase(),
+        trim_(entry.at),
+        recipients
+      ].join('|');
+      if (seen[key]) {
+        return false;
+      }
+      seen[key] = true;
+      return true;
+    })
+    .sort(function (a, b) {
+      return String(a.at || '').localeCompare(String(b.at || ''));
+    });
 }
 
 function publicRequest_(request) {
@@ -1243,8 +1328,10 @@ function publicRequest_(request) {
     lastEditedByEmail: request.lastEditedByEmail,
     approvalWorkflowSteps: publicWorkflowSteps_('approval', request),
     finalWorkflowSteps: publicWorkflowSteps_('final', request),
+    checklistWorkflowSteps: publicWorkflowSteps_('checklist', request),
     approvalHistory: parseJsonArray_(request.approvalHistory),
     finalApprovalHistory: parseJsonArray_(request.finalApprovalHistory),
+    checklistNotificationHistory: parseJsonArray_(request.checklistNotificationHistory),
     changeHistory: parseJsonArray_(request.changeHistory),
     eventName: request.eventName,
     multiDayEvent: request.multiDayEvent,
@@ -1285,7 +1372,7 @@ function publicRequest_(request) {
 
 function publicWorkflowSteps_(stage, request) {
   try {
-    return resolveWorkflowSteps_(workflowConfigForStage_(stage, request), request)
+    return workflowStepsForStage_(request, stage)
       .map(function (step) {
         return {
           index: step.index,
@@ -1294,7 +1381,8 @@ function publicWorkflowSteps_(stage, request) {
           type: step.type,
           name: step.name,
           email: step.email,
-          emails: step.emails
+          emails: step.emails,
+          stepKey: workflowStepKey_(step)
         };
       });
   } catch (err) {
@@ -1311,7 +1399,7 @@ function publicWorkflowSteps_(stage, request) {
   }
 }
 
-function dashboardRequest_(request, role, actorEmail, approverEventRequestIds) {
+function dashboardRequest_(request, role, actorEmail, approverEventRequestIds, checklistNotificationsByRequest) {
   const record = publicRequest_(request);
   const activeStep = getActiveWorkflowStep_(request);
   const isApproverRole = role === 'approver';
@@ -1345,6 +1433,10 @@ function dashboardRequest_(request, role, actorEmail, approverEventRequestIds) {
   record.hasApprovedByMe = hasApprovalHistoryFor_(request, actorEmail) ||
     Boolean(approverEventRequestIds && approverEventRequestIds[request.requestId]);
   record.hasRequestedChangesByMe = hasChangeHistoryFor_(request, actorEmail) || emailsMatch_(request.changeRequestedByEmail, actorEmail);
+  record.checklistNotificationHistory = mergeChecklistNotificationHistory_(
+    record.checklistNotificationHistory || [],
+    (checklistNotificationsByRequest || {})[request.requestId] || []
+  );
   record.isManagedByMe = emailsMatch_(request.lineManagerEmail, actorEmail);
   record.isRelatedToMe = isApproverRole && (
     record.canApprove ||
@@ -1399,7 +1491,7 @@ function waitingOnLabel_(request) {
   }
   if (request.status === STATUS.AWAITING_VTR_CHECKLIST) {
     if (request.checklistCompletedAt) {
-      return `VTR checklist completed; editable by ${request.employeeName} <${request.employeeEmail}> until after ${vtrEventDateRangeForEmail_(request)}`;
+      return `VTR checklist completed; editable by ${request.employeeName} <${request.employeeEmail}> through ${vtrChecklistEditableUntilForEmail_(request)}`;
     }
     return `${request.employeeName} <${request.employeeEmail}> to complete VTR checklist`;
   }

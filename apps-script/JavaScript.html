@@ -1315,7 +1315,7 @@
         </summary>
         <div class="request-body">
           ${renderRequestSummary(request, includeActual)}
-          ${role === 'admin' ? renderAdminWorkflow(request) : renderHistory(request)}
+          ${role === 'admin' || role === 'requester' ? renderRequestWorkflow(request) : renderHistory(request)}
           ${role === 'admin' ? '' : renderDashboardRequestActions(request, role)}
         </div>
       </details>
@@ -1436,7 +1436,7 @@
     `;
   }
 
-  function renderAdminWorkflow(request) {
+  function renderRequestWorkflow(request) {
     const isActualHoursProcess = request.completionMode === 'actual_hours';
     const approval = renderWorkflowStage(
       isActualHoursProcess ? 'Pre-approval workflow' : 'Approval workflow',
@@ -1452,37 +1452,62 @@
         request.finalApprovalHistory || [],
         request
       ) : '';
+    const checklist = renderChecklistWorkflow(request);
     const changes = renderChangeRequests(request.changeHistory || []);
     return `
       <div class="workflow-timeline">
         <h3>Approval History</h3>
         ${approval}
         ${final}
+        ${checklist}
         ${changes}
       </div>
     `;
   }
 
+  function renderChecklistWorkflow(request) {
+    const steps = request.checklistWorkflowSteps || [];
+    const history = request.checklistNotificationHistory || [];
+    if (!steps.length && !history.length && request.processType !== 'vtr') {
+      return '';
+    }
+    if (!steps.length && !history.length && !request.checklistSubmittedAt && !request.checklistCompletedAt) {
+      return '';
+    }
+    return renderWorkflowStage(
+      'VTR checklist notifications',
+      'checklist',
+      steps,
+      history,
+      request
+    );
+  }
+
   function renderWorkflowStage(title, stage, steps, history, request) {
     const activeIndex = Number(request.activeApprovalStepIndex);
     const isActiveStage = request.activeApprovalStage === stage;
+    const buckets = workflowHistoryBuckets(steps, history);
     const rows = steps.length
-      ? steps.map(step => renderWorkflowStep(step, stage, history, request, isActiveStage && activeIndex === Number(step.index))).join('')
+      ? steps.map(step => renderWorkflowStep(
+          step,
+          stage,
+          buckets.entriesByStep[workflowStepRenderKey(step)] || [],
+          request,
+          isActiveStage && activeIndex === Number(step.index)
+        )).join('')
       : '<p class="muted">No configured steps for this stage.</p>';
-    const unmatched = history.filter(entry => !workflowEntryMatchesAnyStep(entry, steps));
     return `
       <div class="workflow-stage">
         <h4>${escapeHtml(title)}</h4>
         <div class="workflow-step-list">
           ${rows}
-          ${unmatched.map(entry => renderWorkflowHistoryOnly(entry)).join('')}
+          ${buckets.unmatched.map(entry => renderWorkflowHistoryOnly(entry)).join('')}
         </div>
       </div>
     `;
   }
 
-  function renderWorkflowStep(step, stage, history, request, isActive) {
-    const entries = history.filter(entry => workflowEntryMatchesStep(entry, step));
+  function renderWorkflowStep(step, stage, entries, request, isActive) {
     const status = workflowStepStatus(step, entries, request, stage, isActive);
     const recipient = step.type === 'notification'
       ? (step.emails || []).join(', ')
@@ -1621,16 +1646,90 @@
     return text ? `"${text}"` : '(blank)';
   }
 
-  function workflowEntryMatchesAnyStep(entry, steps) {
-    return steps.some(step => workflowEntryMatchesStep(entry, step));
-  }
-
   function workflowEntryMatchesStep(entry, step) {
     const entryStepName = normalize(entry.stepName);
     if (entryStepName) {
       return entryStepName === normalize(step.name);
     }
     return normalize(entry.approverEmail) === normalize(step.email);
+  }
+
+  function workflowHistoryBuckets(steps, history) {
+    const entriesByStep = {};
+    const unmatched = [];
+    const matchedEntries = new Set();
+    const matchedSteps = new Set();
+    (steps || []).forEach(step => {
+      entriesByStep[workflowStepRenderKey(step)] = [];
+    });
+
+    function assign(entry, step) {
+      const key = workflowStepRenderKey(step);
+      entriesByStep[key] = entriesByStep[key] || [];
+      entriesByStep[key].push(entry);
+      matchedEntries.add(entry);
+      matchedSteps.add(key);
+    }
+
+    (history || []).forEach(entry => {
+      const step = (steps || []).find(candidate => workflowEntryMatchesStep(entry, candidate));
+      if (step) {
+        assign(entry, step);
+      }
+    });
+
+    (history || []).forEach(entry => {
+      if (matchedEntries.has(entry)) {
+        return;
+      }
+      const step = (steps || []).find(candidate => !matchedSteps.has(workflowStepRenderKey(candidate)) && workflowEntryMatchesStepByIndex(entry, candidate));
+      if (step) {
+        assign(entry, step);
+      }
+    });
+
+    (history || []).forEach(entry => {
+      if (matchedEntries.has(entry)) {
+        return;
+      }
+      const step = (steps || []).find(candidate => !matchedSteps.has(workflowStepRenderKey(candidate)) && workflowEntryCanFallbackMatchStep(entry, candidate));
+      if (step) {
+        assign(entry, step);
+      } else {
+        unmatched.push(entry);
+      }
+    });
+
+    return { entriesByStep, unmatched };
+  }
+
+  function workflowStepRenderKey(step) {
+    return [
+      normalize(step.stage),
+      String(step.originalIndex === undefined ? '' : step.originalIndex),
+      String(step.index === undefined ? '' : step.index),
+      normalize(step.type),
+      normalize(step.name),
+      normalize(step.email)
+    ].join('|');
+  }
+
+  function workflowEntryMatchesStepByIndex(entry, step) {
+    const entryIndex = entry.stepIndex === undefined || entry.stepIndex === '' ? NaN : Number(entry.stepIndex);
+    const entryOriginalIndex = entry.stepOriginalIndex === undefined || entry.stepOriginalIndex === '' ? NaN : Number(entry.stepOriginalIndex);
+    return (!isNaN(entryOriginalIndex) && entryOriginalIndex === Number(step.originalIndex)) ||
+      (!isNaN(entryIndex) && entryIndex === Number(step.index));
+  }
+
+  function workflowEntryCanFallbackMatchStep(entry, step) {
+    if (normalize(entry.stepType || 'approval') !== normalize(step.type || 'approval')) {
+      return false;
+    }
+    if (step.type === 'notification') {
+      const recipients = [].concat(entry.recipients || []).map(normalize);
+      return (step.emails || []).some(email => recipients.indexOf(normalize(email)) !== -1);
+    }
+    return normalize(entry.approverEmail) && normalize(entry.approverEmail) === normalize(step.email);
   }
 
   function normalize(value) {

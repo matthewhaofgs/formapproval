@@ -15,6 +15,8 @@ function recordApprovalDecision_(request, decision, comment, actorEmail) {
   appendHistory_(request, historyField, {
     at: nowIso_(),
     stepName,
+    stepIndex,
+    stepOriginalIndex: step.originalIndex,
     stepType: step.type,
     approverEmail: actor,
     decision: historyDecision,
@@ -99,15 +101,15 @@ function restartFinalApproval_(request, messagePrefix) {
 }
 
 function startWorkflow_(request, stage, messagePrefix) {
-  const steps = resolveWorkflowSteps_(workflowConfigForStage_(stage, request), request);
+  const steps = refreshWorkflowStepsSnapshot_(request, stage);
   if (stage === 'approval' && !workflowHasBlockingStep_(steps)) {
     throw new Error('No blocking workflow step could be resolved. Check the Config sheet approval workflow for this process.');
   }
-  return advanceWorkflow_(request, stage, -1, messagePrefix, 'system');
+  return advanceWorkflow_(request, stage, -1, messagePrefix, 'system', steps);
 }
 
-function advanceWorkflow_(request, stage, currentIndex, messagePrefix, actorEmail) {
-  const steps = resolveWorkflowSteps_(workflowConfigForStage_(stage, request), request);
+function advanceWorkflow_(request, stage, currentIndex, messagePrefix, actorEmail, resolvedSteps) {
+  const steps = resolvedSteps || workflowStepsForStage_(request, stage);
   let sentNotifications = 0;
 
   for (let index = currentIndex + 1; index < steps.length; index += 1) {
@@ -329,6 +331,107 @@ function normalizeWorkflowStep_(step, request, index, originalIndex) {
   };
 }
 
+function workflowStepsSnapshotField_(stage) {
+  if (stage === 'final') {
+    return 'finalWorkflowSteps';
+  }
+  if (stage === 'checklist') {
+    return 'checklistWorkflowSteps';
+  }
+  return 'approvalWorkflowSteps';
+}
+
+function workflowStepSnapshot_(stage, step) {
+  return {
+    index: step.index,
+    originalIndex: step.originalIndex,
+    stage,
+    type: step.type,
+    name: step.name,
+    email: step.email,
+    emails: [].concat(step.emails || []).map(normalizeEmail_).filter(Boolean),
+    subject: trim_(step.subject),
+    message: trim_(step.message),
+    waitingLabel: trim_(step.waitingLabel),
+    followUpStage: trim_(step.followUpStage)
+  };
+}
+
+function workflowStepKey_(step) {
+  return [
+    trim_(step && step.stage),
+    String(step && step.originalIndex !== undefined ? step.originalIndex : ''),
+    String(step && step.index !== undefined ? step.index : ''),
+    trim_(step && step.type).toLowerCase(),
+    trim_(step && step.name).toLowerCase(),
+    normalizeEmail_(step && step.email)
+  ].join('|');
+}
+
+function normalizeStoredWorkflowStep_(stage, step, fallbackIndex) {
+  const index = Number(step && step.index);
+  const originalIndex = Number(step && step.originalIndex);
+  const type = normalizeWorkflowStepType_(step && step.type);
+  const emails = [].concat((step && step.emails) || [])
+    .concat(step && step.email ? [step.email] : [])
+    .map(normalizeEmail_)
+    .filter(Boolean);
+  const seen = {};
+  const uniqueEmails = emails.filter(function (email) {
+    if (seen[email]) {
+      return false;
+    }
+    seen[email] = true;
+    return true;
+  });
+
+  return {
+    index: isNaN(index) ? fallbackIndex : index,
+    originalIndex: isNaN(originalIndex) ? (isNaN(index) ? fallbackIndex : index) : originalIndex,
+    stage: trim_(step && step.stage) || stage,
+    type,
+    name: trim_(step && step.name) || defaultWorkflowStepName_(type),
+    email: uniqueEmails[0] || '',
+    emails: uniqueEmails,
+    subject: trim_(step && step.subject),
+    message: trim_(step && step.message),
+    waitingLabel: isBlockingWorkflowStepType_(type) ? (trim_(step && step.waitingLabel) || defaultWorkflowWaitingLabel_()) : '',
+    followUpStage: trim_(step && step.followUpStage)
+  };
+}
+
+function storedWorkflowStepsForStage_(request, stage) {
+  const field = workflowStepsSnapshotField_(stage);
+  return parseJsonArray_(request && request[field])
+    .map(function (step, index) {
+      return normalizeStoredWorkflowStep_(stage, step, index);
+    })
+    .filter(function (step) {
+      return step.name || step.email || step.emails.length;
+    });
+}
+
+function setWorkflowStepsSnapshot_(request, stage, steps) {
+  const field = workflowStepsSnapshotField_(stage);
+  request[field] = JSON.stringify((steps || []).map(function (step) {
+    return workflowStepSnapshot_(stage, step);
+  }));
+}
+
+function refreshWorkflowStepsSnapshot_(request, stage) {
+  const steps = resolveWorkflowSteps_(workflowConfigForStage_(stage, request), request);
+  setWorkflowStepsSnapshot_(request, stage, steps);
+  return steps;
+}
+
+function workflowStepsForStage_(request, stage) {
+  const stored = storedWorkflowStepsForStage_(request, stage);
+  if (stored.length) {
+    return stored;
+  }
+  return resolveWorkflowSteps_(workflowConfigForStage_(stage, request), request);
+}
+
 function workflowStepMatchesConditions_(step, request) {
   return workflowConditionsMatch_(step.when, request) &&
     !workflowConditionsMatch_(step.unless, request, false);
@@ -484,7 +587,7 @@ function getActiveWorkflowStep_(request) {
     return null;
   }
 
-  const configuredSteps = resolveWorkflowSteps_(workflowConfigForStage_(request.activeApprovalStage, request), request);
+  const configuredSteps = workflowStepsForStage_(request, request.activeApprovalStage);
   const activeIndex = Number(request.activeApprovalStepIndex);
   const indexedStep = configuredSteps[activeIndex];
 
@@ -613,6 +716,8 @@ function recordWorkflowNotificationHistory_(request, stage, step, recipients) {
   appendHistory_(request, historyField, {
     at: nowIso_(),
     stepName: step.name,
+    stepIndex: step.index,
+    stepOriginalIndex: step.originalIndex,
     stepType: 'notification',
     approverEmail: '',
     recipients: [].concat(recipients || []).map(normalizeEmail_).filter(Boolean),

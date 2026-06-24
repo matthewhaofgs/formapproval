@@ -819,13 +819,27 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
   request = currentRequest(harness);
 
   assert.equal(checklistResult.ok, true);
-  assert.equal(request.status, harness.api.STATUS.APPROVED);
-  assert.equal(request.employeeActionTokenHash, '');
+  assert.equal(request.status, harness.api.STATUS.AWAITING_VTR_CHECKLIST);
+  assert.notEqual(request.employeeActionTokenHash, '');
   assert.notEqual(request.checklistCompletedAt, '');
   assert.equal(request.costToStudents, 'Yes');
   assert.ok(harness.events.some(event => event.event === 'CHECKLIST_NOTIFICATION_SENT' && event.detailsJson.includes('Grounds and IT Notification')));
   assert.ok(harness.events.some(event => event.event === 'CHECKLIST_NOTIFICATION_SENT' && event.detailsJson.includes('Finance Cost Notification')));
   assert.ok(harness.events.some(event => event.event === 'CHECKLIST_NOTIFICATION_SENT' && event.detailsJson.includes('Risk and Compliance Checklist Notification')));
+
+  harness.setActiveUser('organiser@example.edu');
+  const postCompleteDashboard = harness.api.getDashboardData({ role: 'requester' });
+  assert.equal(postCompleteDashboard.requests[0].canEditChecklist, true);
+  assert.match(postCompleteDashboard.requests[0].waitingOnLabel, /through 11 July 2026/);
+
+  harness.api.sendDueActualHoursRequests();
+  request = currentRequest(harness);
+  assert.equal(request.status, harness.api.STATUS.AWAITING_VTR_CHECKLIST);
+
+  harness.setNow('2026-07-12T00:30:00.000Z');
+  harness.api.sendDueActualHoursRequests();
+  request = currentRequest(harness);
+  assert.equal(request.status, harness.api.STATUS.APPROVED);
 });
 
 test('VTR workflow follows the updated initial approval, final approval, and risk acknowledgement branches', () => {
@@ -922,6 +936,37 @@ test('VTR workflow follows the updated initial approval, final approval, and ris
   ]);
 });
 
+test('dashboard workflow uses the request snapshot when live VTR workflow names change', () => {
+  const harness = createAppsScriptHarness();
+
+  harness.api.submitRequest(defaultVtrRequest({
+    schoolArea: 'Junior School',
+    riskAssessmentRequired: 'No'
+  }));
+  let request = currentRequest(harness);
+  assert.ok(JSON.parse(request.approvalWorkflowSteps).some(step => step.name === 'Junior School Executive Approval'));
+
+  const juniorExecutive = harness.api.DEFAULT_PROCESS_DEFINITIONS.vtr.workflows.approval
+    .find(step => step.name === 'Junior School Executive Approval');
+  assert.ok(juniorExecutive, 'Expected Junior School Executive Approval in live workflow defaults');
+  juniorExecutive.name = 'Junior School Renamed Executive Approval';
+
+  harness.setActiveUser('organiser@example.edu');
+  const requesterDashboard = harness.api.getDashboardData({ role: 'requester' });
+  const requesterRequest = requesterDashboard.requests[0];
+  assert.ok(requesterRequest.approvalWorkflowSteps.some(step => step.name === 'Junior School Executive Approval'));
+  assert.equal(requesterRequest.approvalWorkflowSteps.some(step => step.name === 'Junior School Renamed Executive Approval'), false);
+
+  harness.setActiveUser('admin@example.edu');
+  const adminDashboard = harness.api.getDashboardData({ role: 'admin', process: 'vtr' });
+  const adminRequest = adminDashboard.requests[0];
+  assert.ok(adminRequest.approvalWorkflowSteps.some(step => step.name === 'Junior School Executive Approval'));
+  assert.equal(adminRequest.approvalWorkflowSteps.some(step => step.name === 'Junior School Renamed Executive Approval'), false);
+
+  request = currentRequest(harness);
+  assert.ok(JSON.parse(request.approvalWorkflowSteps).some(step => step.name === 'Junior School Executive Approval'));
+});
+
 test('VTR initial approval emails the requester and then starts final approval for the same logistics owner', () => {
   const harness = createAppsScriptHarness();
   const seniorInitialEmail = vtrWorkflowEmail(harness, 'Senior School Initial Approval');
@@ -977,7 +1022,7 @@ test('VTR initial approval emails the requester and then starts final approval f
   assert.ok(harness.mail.some(mail =>
     mail.to === 'organiser@example.edu' &&
     /complete VTR checklist/i.test(mail.subject || '') &&
-    /remains open until after/i.test(mail.htmlBody || '')
+    /remains editable through/i.test(mail.htmlBody || '')
   ));
 
   harness.api.submitVtrChecklist(Object.assign(defaultVtrChecklist({
@@ -1005,6 +1050,14 @@ test('VTR initial approval emails the requester and then starts final approval f
   assert.equal(completedDashboard.requests[0].canEditChecklist, true);
   assert.match(completedDashboard.requests[0].waitingOnLabel, /VTR checklist completed/);
   assert.match(completedDashboard.requests[0].waitingOnLabel, /editable by Alex Organiser/);
+  assert.match(completedDashboard.requests[0].waitingOnLabel, /through 11 July 2026/);
+  assert.ok(completedDashboard.requests[0].checklistWorkflowSteps.some(step => step.name === 'Canteen and Cafe Notification'));
+  assert.ok(completedDashboard.requests[0].checklistNotificationHistory.some(entry => entry.stepName === 'Canteen and Cafe Notification'));
+
+  harness.setActiveUser('admin@example.edu');
+  const adminDashboard = harness.api.getDashboardData({ role: 'admin', process: 'vtr' });
+  assert.ok(adminDashboard.requests[0].checklistWorkflowSteps.some(step => step.name === 'Canteen and Cafe Notification'));
+  assert.ok(adminDashboard.requests[0].checklistNotificationHistory.some(entry => entry.stepName === 'Canteen and Cafe Notification'));
 
   harness.setNow('2026-06-22T00:30:00.000Z');
   const reminders = harness.api.sendWeeklyPendingReminders();
@@ -1012,6 +1065,12 @@ test('VTR initial approval emails the requester and then starts final approval f
   assert.equal(harness.events.some(event => event.event === 'WEEKLY_VTR_CHECKLIST_REMINDER_SENT'), false);
 
   harness.setNow('2026-07-11T00:30:00.000Z');
+  harness.api.sendDueActualHoursRequests();
+  request = currentRequest(harness);
+
+  assert.equal(request.status, harness.api.STATUS.AWAITING_VTR_CHECKLIST);
+
+  harness.setNow('2026-07-12T00:30:00.000Z');
   harness.api.sendDueActualHoursRequests();
   request = currentRequest(harness);
 

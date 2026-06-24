@@ -74,6 +74,10 @@ const REQUEST_HEADERS = [
   'lastEditedAt',
   'lastEditedByEmail',
   'approvalHistory',
+  'approvalWorkflowSteps',
+  'finalWorkflowSteps',
+  'checklistWorkflowSteps',
+  'checklistNotificationHistory',
   'changeHistory',
   'processType'
 ];

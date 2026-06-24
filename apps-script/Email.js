@@ -94,7 +94,7 @@ function sendVtrChecklistRequestEmail_(request, token, isReminder) {
   const subject = `${request.requestId}: ${isReminder ? 'reminder - ' : ''}complete VTR checklist`;
   const htmlBody = emailShell_(
     `${isReminder ? 'Reminder: ' : ''}Complete VTR checklist`,
-    `<p>Your VTR has completed approval. Please complete and update the checklist for request ${escapeHtml_(request.requestId)}. The checklist remains open until after ${vtrEventDateRangeForEmail_(request)} so you can update items as preparation progresses.</p>` +
+    `<p>Your VTR has completed approval. Please complete and update the checklist for request ${escapeHtml_(request.requestId)}. The checklist remains editable through ${vtrChecklistEditableUntilForEmail_(request)} so you can update items as preparation progresses.</p>` +
       summaryTable_(request, false) +
       buttonHtml_(url, 'Open VTR checklist') +
       secondaryLinkHtml_(dashboardUrl, 'Open My Requests')
@@ -412,6 +412,15 @@ function vtrEventStartDate_(request) {
 
 function vtrEventEndDate_(request) {
   return request.eventEndDate || request.eventDate || request.eventStartDate || '';
+}
+
+function vtrChecklistEditableUntilDate_(request) {
+  const endDate = vtrEventEndDate_(request);
+  return endDate ? addDaysKey_(endDate, 1) : '';
+}
+
+function vtrChecklistEditableUntilForEmail_(request) {
+  return formatDateForEmail_(vtrChecklistEditableUntilDate_(request));
 }
 
 function vtrEventDateRangeForEmail_(request) {
