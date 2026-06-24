@@ -225,9 +225,11 @@ test('actual-hours follow-up form is also rendered from the reusable schema', ()
   assert.match(js, /renderConfiguredFormSection\(section, request, isChangeEdit, index\)/);
   assert.match(js, /data-checklist-action="save"/);
   assert.match(js, /data-checklist-action="complete"/);
+  assert.match(js, />Submit checklist<\/button>/);
   assert.match(js, /data\.checklistAction = submitter/);
   assert.match(js, /result\.closed/);
-  assert.match(js, /Completing checklist/);
+  assert.match(js, /Submitting checklist/);
+  assert.match(js, /Checklist submitted/);
   assert.match(nativeRuntime, /checklistCompletedAt/);
   assert.doesNotMatch(js, /wireActualToggles/);
   assert.doesNotMatch(js, /variation-wrap/);

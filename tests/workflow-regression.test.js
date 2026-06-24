@@ -793,7 +793,7 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
   assert.notEqual(request.employeeActionTokenHash, '');
   assert.equal(dashboard.requests[0].isClosed, false);
   assert.equal(dashboard.requests[0].canEditChecklist, true);
-  assert.match(dashboard.requests[0].waitingOnLabel, /complete VTR checklist/);
+  assert.match(dashboard.requests[0].waitingOnLabel, /submit VTR checklist/);
   assert.ok(harness.events.some(event => event.event === 'VTR_CHECKLIST_REQUESTED'));
   assert.ok(harness.mail.some(mail => mail.to === 'organiser@example.edu' && /complete VTR checklist/i.test(mail.subject || '')));
 
@@ -830,6 +830,9 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
   harness.setActiveUser('organiser@example.edu');
   const postCompleteDashboard = harness.api.getDashboardData({ role: 'requester' });
   assert.equal(postCompleteDashboard.requests[0].canEditChecklist, true);
+  assert.equal(postCompleteDashboard.requests[0].statusLabel, 'Checklist submitted');
+  assert.equal(postCompleteDashboard.requests[0].waitingOnType, 'closed');
+  assert.match(postCompleteDashboard.requests[0].waitingOnLabel, /No further action required/);
   assert.match(postCompleteDashboard.requests[0].waitingOnLabel, /through 11 July 2026/);
 
   harness.api.sendDueActualHoursRequests();
@@ -1048,7 +1051,9 @@ test('VTR initial approval emails the requester and then starts final approval f
   harness.setActiveUser('organiser@example.edu');
   const completedDashboard = harness.api.getDashboardData({ role: 'requester' });
   assert.equal(completedDashboard.requests[0].canEditChecklist, true);
-  assert.match(completedDashboard.requests[0].waitingOnLabel, /VTR checklist completed/);
+  assert.equal(completedDashboard.requests[0].statusLabel, 'Checklist submitted');
+  assert.equal(completedDashboard.requests[0].waitingOnType, 'closed');
+  assert.match(completedDashboard.requests[0].waitingOnLabel, /No further action required/);
   assert.match(completedDashboard.requests[0].waitingOnLabel, /editable by Alex Organiser/);
   assert.match(completedDashboard.requests[0].waitingOnLabel, /through 11 July 2026/);
   assert.ok(completedDashboard.requests[0].checklistWorkflowSteps.some(step => step.name === 'Canteen and Cafe Notification'));

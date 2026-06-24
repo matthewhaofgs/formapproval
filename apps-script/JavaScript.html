@@ -3062,7 +3062,7 @@
     const submitActions = isChecklist
       ? `
             <button class="button secondary" type="submit" data-checklist-action="save">Save checklist</button>
-            <button class="button primary" type="submit" data-checklist-action="complete">Complete checklist</button>
+            <button class="button primary" type="submit" data-checklist-action="complete">Submit checklist</button>
         `
       : `<button class="button primary" type="submit">${escapeHtml(isChangeEdit ? (definition.editSubmitLabel || defaultEditLabel) : (definition.submitLabel || defaultSubmitLabel))}</button>`;
     return `
@@ -3308,7 +3308,7 @@
           }
           showNotice(result.message, 'success');
           if (result.closed) {
-            app.innerHTML = renderMessagePanel('Checklist completed', result.message, `<div class="actions inline"><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'requester' }))}">Open My Requests</a></div>`);
+            app.innerHTML = renderMessagePanel('Checklist submitted', result.message, `<div class="actions inline"><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'requester' }))}">Open My Requests</a></div>`);
           }
           return;
         }
@@ -3772,7 +3772,7 @@
     };
     if (method === 'submitVtrChecklist') {
       return payload && payload.checklistAction === 'complete'
-        ? 'Completing checklist...'
+        ? 'Submitting checklist...'
         : 'Saving checklist...';
     }
     return messages[method] || 'Working...';

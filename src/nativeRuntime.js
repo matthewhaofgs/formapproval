@@ -948,6 +948,25 @@ function formatDatePattern(value, timeZone, pattern) {
   if (pattern === "yyyy-MM-dd'T'HH:mm:ssXXX") {
     return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset}`;
   }
+  if (pattern === 'd MMMM yyyy' || pattern === 'd MMMM yyyy h:mm a') {
+    const friendlyParts = new Intl.DateTimeFormat('en-AU', {
+      timeZone,
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: pattern.includes('h:mm') ? 'numeric' : undefined,
+      minute: pattern.includes('h:mm') ? '2-digit' : undefined,
+      hour12: pattern.includes('h:mm') ? true : undefined
+    }).formatToParts(date).reduce((acc, part) => {
+      acc[part.type] = part.value;
+      return acc;
+    }, {});
+    const dateText = `${friendlyParts.day} ${friendlyParts.month} ${friendlyParts.year}`;
+    if (pattern === 'd MMMM yyyy') {
+      return dateText;
+    }
+    return `${dateText} ${friendlyParts.hour}:${friendlyParts.minute} ${String(friendlyParts.dayPeriod || '').toUpperCase()}`;
+  }
   return date.toISOString();
 }
 

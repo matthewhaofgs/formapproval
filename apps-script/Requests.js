@@ -538,7 +538,7 @@ function submitVtrChecklist(payload) {
         requestId: request.requestId,
         request: publicRequest_(request),
         message: checklistAction === 'complete'
-          ? `Checklist completed for request ${request.requestId}. It remains open while the approval workflow finishes.`
+          ? `Checklist submitted for request ${request.requestId}. It remains open while the approval workflow finishes.`
           : `Checklist saved for request ${request.requestId}. It remains editable while the approval workflow finishes.`
       };
     }
@@ -553,7 +553,7 @@ function submitVtrChecklist(payload) {
       requestId: request.requestId,
       request: publicRequest_(request),
       message: checklistAction === 'complete'
-        ? `Checklist completed for request ${request.requestId}. It remains editable through ${vtrChecklistEditableUntilForEmail_(request)}.`
+        ? `Checklist submitted for request ${request.requestId}. No further action is required. It remains editable through ${vtrChecklistEditableUntilForEmail_(request)}.`
         : `Checklist saved for request ${request.requestId}. It remains editable through ${vtrChecklistEditableUntilForEmail_(request)}.`
     };
   } finally {
@@ -1454,6 +1454,9 @@ function waitingOnType_(request) {
   if (request.activeApprovalStage && request.activeApprovalStepEmail) {
     return 'approver';
   }
+  if (request.status === STATUS.AWAITING_VTR_CHECKLIST && request.checklistCompletedAt) {
+    return 'closed';
+  }
   if (request.status === STATUS.NEEDS_APPROVAL_CHANGES || request.status === STATUS.NEEDS_ACTUAL_HOURS_CHANGES) {
     return 'employee';
   }
@@ -1491,9 +1494,9 @@ function waitingOnLabel_(request) {
   }
   if (request.status === STATUS.AWAITING_VTR_CHECKLIST) {
     if (request.checklistCompletedAt) {
-      return `VTR checklist completed; editable by ${request.employeeName} <${request.employeeEmail}> through ${vtrChecklistEditableUntilForEmail_(request)}`;
+      return `No further action required; VTR checklist remains editable by ${request.employeeName} <${request.employeeEmail}> through ${vtrChecklistEditableUntilForEmail_(request)}`;
     }
-    return `${request.employeeName} <${request.employeeEmail}> to complete VTR checklist`;
+    return `${request.employeeName} <${request.employeeEmail}> to submit VTR checklist`;
   }
   if (request.status === STATUS.FINAL_APPROVED || request.status === STATUS.APPROVED) {
     return 'Complete';
@@ -1529,6 +1532,9 @@ function renderWorkflowWaitingLabel_(step, request) {
 }
 
 function processStatusLabel_(request) {
+  if (request.status === STATUS.AWAITING_VTR_CHECKLIST && request.checklistCompletedAt) {
+    return 'Checklist submitted';
+  }
   if (getProcessCompletionMode_(request) === 'actual_hours') {
     if (request.status === STATUS.PENDING_APPROVAL) {
       return 'Pending pre-approval';
