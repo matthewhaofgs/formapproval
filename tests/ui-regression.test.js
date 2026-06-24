@@ -297,6 +297,10 @@ test('VTR form definition has event, checklist, and offsite fields without askin
     options: ['Yes', 'No'],
     required: true
   });
+  assert.equal(formField('vtr', 'checklist', 'groundsConsulted').label, 'Grounds consulted and ticket entered where required.');
+  assert.equal(formField('vtr', 'checklist', 'itConsulted').label, 'IT consulted and ticket entered where required.');
+  assert.equal(formField('vtr', 'checklist', 'groundsAfterHoursNotified').label, 'Grounds notified that this event occurs outside normal school hours.');
+  assert.equal(formField('vtr', 'checklist', 'groundsItConsulted'), undefined);
   assert.match(js, /const checklistOptions = fieldSpec\.options \|\| \['Yes', 'No', 'N\/A'\]/);
   assert.equal(JSON.stringify(liveForms).includes('"Business Operations"'), false);
   assert.equal(JSON.stringify(liveForms).includes('firstApprover'), false);

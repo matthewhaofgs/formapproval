@@ -213,7 +213,8 @@ function appendLegacyOvertimeRow(harness, values) {
 function quietVtrRequest(overrides = {}) {
   return defaultVtrRequest(Object.assign({
     costToStudents: 'No',
-    groundsItConsulted: 'N/A',
+    groundsConsulted: 'N/A',
+    itConsulted: 'N/A',
     groundsAfterHoursNotified: 'N/A',
     sportPdhpeConsulted: 'N/A',
     chaplaincyConsulted: 'N/A',
@@ -230,7 +231,8 @@ function defaultVtrChecklist(overrides = {}) {
     riskAssessmentCompleted: 'Yes',
     wwccConfirmed: 'N/A',
     budgetSubmitted: 'Yes',
-    groundsItConsulted: 'N/A',
+    groundsConsulted: 'N/A',
+    itConsulted: 'N/A',
     groundsAfterHoursNotified: 'N/A',
     sportPdhpeConsulted: 'N/A',
     chaplaincyConsulted: 'N/A',
@@ -580,6 +582,9 @@ test('VTR logistics is in the request form and operational checklist is a separa
   assert.equal(requestFieldNames.includes('riskAssessmentCompleted'), false);
   assert.ok(checklistFieldNames.includes('costToStudents'));
   assert.ok(checklistFieldNames.includes('riskAssessmentCompleted'));
+  assert.ok(checklistFieldNames.includes('groundsConsulted'));
+  assert.ok(checklistFieldNames.includes('itConsulted'));
+  assert.equal(checklistFieldNames.includes('groundsItConsulted'), false);
   assert.equal(checklistFieldNames.includes('logisticsNotified'), false);
 
   const assessment = harness.api.validateRequestForm_(defaultVtrRequest({
@@ -589,7 +594,8 @@ test('VTR logistics is in the request form and operational checklist is a separa
     riskAssessmentCompleted: 'Yes',
     wwccConfirmed: 'Yes',
     budgetSubmitted: 'Yes',
-    groundsItConsulted: 'Yes',
+    groundsConsulted: 'Yes',
+    itConsulted: 'Yes',
     groundsAfterHoursNotified: 'Yes',
     sportPdhpeConsulted: 'Yes',
     chaplaincyConsulted: 'Yes',
@@ -606,10 +612,12 @@ test('VTR logistics is in the request form and operational checklist is a separa
 
   const checklist = harness.api.validateVtrChecklistForm_(defaultVtrChecklist({
     costToStudents: 'Yes',
-    groundsItConsulted: 'Yes'
+    groundsConsulted: 'Yes',
+    itConsulted: 'Yes'
   }), Object.assign(defaultVtrRequest(), assessment));
   assert.equal(checklist.costToStudents, 'Yes');
-  assert.equal(checklist.groundsItConsulted, 'Yes');
+  assert.equal(checklist.groundsConsulted, 'Yes');
+  assert.equal(checklist.itConsulted, 'Yes');
 });
 
 test('actual-hours form definition drives validation and defaults from the approved request', () => {
@@ -800,7 +808,8 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
   const checklistToken = latestChecklistToken(harness);
   const saveResult = harness.api.submitVtrChecklist(Object.assign(defaultVtrChecklist({
     costToStudents: 'Yes',
-    groundsItConsulted: 'Yes'
+    groundsConsulted: 'Yes',
+    itConsulted: 'Yes'
   }), { token: checklistToken }));
   request = currentRequest(harness);
 
@@ -814,7 +823,8 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
 
   const checklistResult = harness.api.submitVtrChecklist(Object.assign(defaultVtrChecklist({
     costToStudents: 'Yes',
-    groundsItConsulted: 'Yes'
+    groundsConsulted: 'Yes',
+    itConsulted: 'Yes'
   }), { token: checklistToken, checklistAction: 'complete' }));
   request = currentRequest(harness);
 
@@ -823,7 +833,8 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
   assert.notEqual(request.employeeActionTokenHash, '');
   assert.notEqual(request.checklistCompletedAt, '');
   assert.equal(request.costToStudents, 'Yes');
-  assert.ok(harness.events.some(event => event.event === 'CHECKLIST_NOTIFICATION_SENT' && event.detailsJson.includes('Grounds and IT Notification')));
+  assert.ok(harness.events.some(event => event.event === 'CHECKLIST_NOTIFICATION_SENT' && event.detailsJson.includes('Grounds Notification')));
+  assert.ok(harness.events.some(event => event.event === 'CHECKLIST_NOTIFICATION_SENT' && event.detailsJson.includes('IT Notification')));
   assert.ok(harness.events.some(event => event.event === 'CHECKLIST_NOTIFICATION_SENT' && event.detailsJson.includes('Finance Cost Notification')));
   assert.ok(harness.events.some(event => event.event === 'CHECKLIST_NOTIFICATION_SENT' && event.detailsJson.includes('Risk and Compliance Checklist Notification')));
 
@@ -906,7 +917,8 @@ test('VTR workflow follows the updated initial approval, final approval, and ris
   assert.deepEqual(vtrWorkflowStepNames(harness, {
     schoolArea: 'Junior School',
     riskAssessmentRequired: 'No',
-    groundsItConsulted: 'Yes',
+    groundsConsulted: 'Yes',
+    itConsulted: 'Yes',
     sportPdhpeConsulted: 'Yes',
     canteenNotified: 'Yes',
     costToStudents: 'Yes'
@@ -917,17 +929,28 @@ test('VTR workflow follows the updated initial approval, final approval, and ris
   ]);
 
   assert.deepEqual(vtrWorkflowStepNames(harness, {
-    groundsItConsulted: 'Yes',
+    groundsConsulted: 'Yes',
+    itConsulted: 'Yes',
     sportPdhpeConsulted: 'Yes',
     canteenNotified: 'Yes',
     costToStudents: 'Yes',
     riskAssessmentCompleted: 'Yes'
   }, 'checklist'), [
-    'notification:Grounds and IT Notification',
+    'notification:Grounds Notification',
+    'notification:IT Notification',
     'notification:Sport and PDHPE Notification',
     'notification:Canteen and Cafe Notification',
     'notification:Risk and Compliance Checklist Notification',
     'notification:Finance Cost Notification'
+  ]);
+
+  assert.deepEqual(vtrWorkflowStepNames(harness, {
+    groundsConsulted: 'Yes',
+    itConsulted: 'Yes',
+    groundsAfterHoursNotified: 'Yes'
+  }, 'checklist'), [
+    'notification:Grounds After-Hours Notification',
+    'notification:IT Notification'
   ]);
 
   assert.deepEqual(vtrWorkflowStepNames(harness, {
