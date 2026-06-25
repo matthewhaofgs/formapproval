@@ -21,7 +21,7 @@ const APP_SETTINGS = {
   SPREADSHEET_ID: '',
   WEB_APP_URL: '',
   MAIL_FROM_NAME: 'OFG Workflow Approvals',
-  FEEDBACK_EMAIL: 'it+formsfeedback@ofg.nsw.edu.au',
+  FEEDBACK_EMAIL: 'support@ofg.nsw.edu.au',
   FOLLOW_UP_CHECK_HOUR: 7,
   WEEKLY_REMINDER_DAY: 'MONDAY',
   WEEKLY_REMINDER_CHECK_HOUR: 8,

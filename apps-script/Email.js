@@ -246,7 +246,7 @@ function sendFeedbackEmail_(feedback) {
   const message = trim_(feedback && feedback.message);
   const pageUrl = trim_(feedback && feedback.pageUrl);
   const submittedAt = feedback && feedback.submittedAt ? feedback.submittedAt : nowIso_();
-  const recipient = APP_SETTINGS.FEEDBACK_EMAIL || 'it+formsfeedback@ofg.nsw.edu.au';
+  const recipient = APP_SETTINGS.FEEDBACK_EMAIL || 'support@ofg.nsw.edu.au';
   const subject = 'OFG Forms feedback';
   const rows = [
     ['Submitted', formatDateTimeForEmail_(submittedAt)],

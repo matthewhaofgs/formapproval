@@ -67,7 +67,7 @@ test('authenticated users can open and submit site feedback', () => {
   assert.match(js, /submitFeedback: 'Sending feedback\.\.\.'/);
   assert.match(css, /\.feedback-dialog\s*\{/);
   assert.match(css, /\.topnav button/);
-  assert.match(config, /FEEDBACK_EMAIL:\s*'it\+formsfeedback@ofg\.nsw\.edu\.au'/);
+  assert.match(config, /FEEDBACK_EMAIL:\s*'support@ofg\.nsw\.edu\.au'/);
   assert.match(email, /function sendFeedbackEmail_\(feedback\)/);
   assert.match(server, /'submitFeedback'/);
   assert.match(nativeRuntime, /'submitFeedback'/);

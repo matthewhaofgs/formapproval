@@ -2395,9 +2395,9 @@ test('authenticated users can submit forms-site feedback by email', () => {
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.recipient, 'it+formsfeedback@ofg.nsw.edu.au');
+  assert.equal(result.recipient, 'support@ofg.nsw.edu.au');
   assert.equal(harness.mail.length, 1);
-  assert.equal(harness.mail[0].to, 'it+formsfeedback@ofg.nsw.edu.au');
+  assert.equal(harness.mail[0].to, 'support@ofg.nsw.edu.au');
   assert.equal(harness.mail[0].subject, 'OFG Forms feedback');
   assert.match(harness.mail[0].body, /teacher@example\.edu/);
   assert.match(harness.mail[0].body, /Please add clearer VTR checklist wording\./);
