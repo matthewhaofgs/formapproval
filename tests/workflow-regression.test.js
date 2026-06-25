@@ -1919,6 +1919,36 @@ test('admin reassignment invalidates the previous owner and lets the new owner a
   assert.ok(harness.events.some(event => event.event === 'APPROVAL_REASSIGNED' && event.detailsJson.includes('delegate@example.edu')));
 });
 
+test('admin reassignment works for acknowledgement steps', () => {
+  const harness = createAppsScriptHarness({ activeEmail: 'admin@example.edu' });
+  setOvertimeApprovalWorkflow(harness, [
+    { type: 'acknowledgement', name: 'Risk Assessment Acknowledgement', email: 'risk@example.edu' }
+  ]);
+  submit(harness);
+  const requestId = currentRequest(harness).requestId;
+
+  const result = harness.api.adminReassignRequest({
+    requestId,
+    newApproverName: 'Risk Delegate',
+    newApproverEmail: 'riskdelegate@example.edu'
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(currentRequest(harness).activeApprovalStepEmail, 'riskdelegate@example.edu');
+  assert.ok(harness.events.some(event =>
+    event.event === 'APPROVAL_REASSIGNED' &&
+    event.detailsJson.includes('acknowledgement') &&
+    event.detailsJson.includes('riskdelegate@example.edu')
+  ));
+
+  harness.setActiveUser('riskdelegate@example.edu');
+  harness.api.submitDashboardApprovalDecision({ requestId, decision: 'acknowledge' });
+  const request = currentRequest(harness);
+  const history = JSON.parse(request.approvalHistory);
+  assert.equal(history[0].decision, 'acknowledged');
+  assert.equal(history[0].approverEmail, 'riskdelegate@example.edu');
+});
+
 test('requester and admin cancellation stop the workflow and keep requests visible as stopped', () => {
   const requesterHarness = createAppsScriptHarness({ activeEmail: 'employee@example.edu' });
   submit(requesterHarness);

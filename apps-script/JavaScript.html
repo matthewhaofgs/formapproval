@@ -1981,6 +1981,7 @@
         event.preventDefault();
         event.stopPropagation();
         const panelName = event.currentTarget.dataset.adminPanelName;
+        const item = event.currentTarget.closest('.request-item');
         const shell = event.currentTarget.closest('.request-shell');
         const panel = shell ? shell.querySelector('.admin-action-panel') : event.currentTarget.closest('.admin-action-panel');
         if (!panel) {
@@ -1995,8 +1996,12 @@
           element.classList.add('hidden');
         });
         if (shouldOpen) {
+          if (item) {
+            item.open = true;
+          }
           panel.classList.remove('hidden');
           target.classList.remove('hidden');
+          panel.scrollIntoView({ block: 'nearest' });
         } else {
           panel.classList.add('hidden');
         }

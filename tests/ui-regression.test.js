@@ -396,7 +396,10 @@ test('admin row actions include reminder, reassign, and cancel buttons, with no 
   assert.match(js, /data-admin-cancel/);
   assert.match(js, /Cancel request/);
   assert.match(js, /class="admin-action-panel hidden"/);
+  assert.match(js, /const item = event\.currentTarget\.closest\('\.request-item'\)/);
+  assert.match(js, /item\.open = true;/);
   assert.match(js, /panel\.classList\.remove\('hidden'\);[\s\S]*?target\.classList\.remove\('hidden'\);/);
+  assert.match(js, /panel\.scrollIntoView\(\{ block: 'nearest' \}\);/);
   assert.match(js, /panel\.classList\.add\('hidden'\);/);
   assert.doesNotMatch(js, /data-admin-skip/);
   assert.doesNotMatch(js, /Skip approval/);
