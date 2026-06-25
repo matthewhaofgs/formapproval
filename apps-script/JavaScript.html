@@ -295,10 +295,18 @@
     if (data.role === 'approver') {
       const assigned = requests.filter(request => request.canApprove);
       const relatedInProgress = requests.filter(request => request.isPending && !request.canApprove);
-      sections += renderRequestSection('Assigned to me', assigned, data.role, { collapsible: true, open: false });
-      sections += renderRequestSection('In-progress / related requests', relatedInProgress, data.role, { collapsible: true, open: false });
-      sections += renderRequestSection('Completed requests', completedRequests, data.role, { collapsible: true, open: false });
-      sections += renderRequestSection('Cancelled / denied requests', stoppedRequests, data.role, { collapsible: true, open: false });
+      sections = renderDashboardProcessGroups(requests, data.role, processRequests => {
+        const processAssigned = processRequests.filter(request => request.canApprove);
+        const processRelatedInProgress = processRequests.filter(request => request.isPending && !request.canApprove);
+        const processCompletedRequests = processRequests.filter(request => request.isClosed && !request.isStopped);
+        const processStoppedRequests = processRequests.filter(request => request.isStopped);
+        return [
+          renderRequestSection('Assigned to me', processAssigned, data.role, { collapsible: true, open: false }),
+          renderRequestSection('In-progress / related requests', processRelatedInProgress, data.role, { collapsible: true, open: false }),
+          renderRequestSection('Completed requests', processCompletedRequests, data.role, { collapsible: true, open: false }),
+          renderRequestSection('Cancelled / denied requests', processStoppedRequests, data.role, { collapsible: true, open: false })
+        ].join('');
+      });
       metrics = `
         ${kpi(counts.total || 0, 'Visible requests')}
         ${kpi(counts.waitingForMe || 0, 'Needs my decision')}
@@ -306,8 +314,10 @@
         ${kpi(completedRequests.length, 'Completed')}
       `;
     } else if (data.role === 'requester') {
-      sections += renderRequestSection('Active requests', requests.filter(request => request.isPending), data.role);
-      sections += renderRequestSection('Closed requests', requests.filter(request => request.isClosed), data.role);
+      sections = renderDashboardProcessGroups(requests, data.role, processRequests => [
+        renderRequestSection('Active requests', processRequests.filter(request => request.isPending), data.role),
+        renderRequestSection('Closed requests', processRequests.filter(request => request.isClosed), data.role)
+      ].join(''));
       metrics = `
         ${kpi(counts.total || 0, 'My Requests')}
         ${kpi(counts.pending || 0, 'In progress')}
@@ -334,6 +344,54 @@
       ${data.role === 'admin' || data.role === 'approver' ? renderDashboardFilter(requests.length) : ''}
       ${sections || '<p class="muted">No requests found.</p>'}
     `;
+  }
+
+  function renderDashboardProcessGroups(requests, role, sectionRenderer) {
+    return dashboardProcessGroups(requests).map(group => {
+      const pending = group.requests.filter(request => request.isPending).length;
+      const closed = group.requests.filter(request => request.isClosed && !request.isStopped).length;
+      const stopped = group.requests.filter(request => request.isStopped).length;
+      const counts = [
+        `${group.requests.length} total`,
+        `${pending} open`,
+        `${closed} completed`,
+        stopped ? `${stopped} cancelled / denied` : ''
+      ].filter(Boolean);
+      return `
+        <section class="dashboard-process-group" data-dashboard-process="${escapeHtml(group.key)}">
+          <div class="dashboard-process-heading">
+            <div>
+              <h3>${escapeHtml(group.name)}</h3>
+              <span class="request-meta">${escapeHtml(group.key)}</span>
+            </div>
+            <div class="process-counts">
+              ${counts.map(count => `<span>${escapeHtml(count)}</span>`).join('')}
+            </div>
+          </div>
+          <div class="dashboard-process-sections">
+            ${sectionRenderer(group.requests, group)}
+          </div>
+        </section>
+      `;
+    }).join('');
+  }
+
+  function dashboardProcessGroups(requests) {
+    const groups = [];
+    const byKey = {};
+    (requests || []).forEach(request => {
+      const key = request.processType || 'request';
+      if (!byKey[key]) {
+        byKey[key] = {
+          key,
+          name: request.processName || key,
+          requests: []
+        };
+        groups.push(byKey[key]);
+      }
+      byKey[key].requests.push(request);
+    });
+    return groups.sort((a, b) => String(a.name || a.key).localeCompare(String(b.name || b.key)));
   }
 
   function renderAdminProcessChooser(data) {

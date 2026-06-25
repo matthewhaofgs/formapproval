@@ -401,12 +401,21 @@ test('admin dashboard request summaries wrap status, waiting text, and actions c
 });
 
 test('approver and admin dashboards split completed from cancelled or denied requests and start collapsed', () => {
-  assert.match(js, /renderRequestSection\('Assigned to me', assigned, data\.role, \{ collapsible: true, open: false \}\)/);
-  assert.match(js, /renderRequestSection\('Completed requests', completedRequests, data\.role, \{ collapsible: true, open: false \}\)/);
-  assert.match(js, /renderRequestSection\('Cancelled \/ denied requests', stoppedRequests, data\.role, \{ collapsible: true, open: false \}\)/);
+  assert.match(js, /renderRequestSection\('Assigned to me', processAssigned, data\.role, \{ collapsible: true, open: false \}\)/);
+  assert.match(js, /renderRequestSection\('Completed requests', processCompletedRequests, data\.role, \{ collapsible: true, open: false \}\)/);
+  assert.match(js, /renderRequestSection\('Cancelled \/ denied requests', processStoppedRequests, data\.role, \{ collapsible: true, open: false \}\)/);
   assert.match(js, /renderRequestSection\('Incomplete requests', requests\.filter\(request => request\.isPending\), data\.role, \{ collapsible: true, open: false \}\)/);
   assert.match(css, /content: "Expand section";/);
   assert.doesNotMatch(css, /content: "Open section";/);
+});
+
+test('requester and approver dashboards group requests by process type', () => {
+  assert.match(js, /sections = renderDashboardProcessGroups\(requests, data\.role, processRequests =>/);
+  assert.match(js, /function renderDashboardProcessGroups\(requests, role, sectionRenderer\)/);
+  assert.match(js, /data-dashboard-process="\$\{escapeHtml\(group\.key\)\}"/);
+  assert.match(js, /function dashboardProcessGroups\(requests\)/);
+  assert.match(css, /\.dashboard-process-group\s*\{/);
+  assert.match(css, /\.dashboard-process-heading\s*\{/);
 });
 
 test('request summaries and email summaries include the submitted timestamp once in the detailed table', () => {

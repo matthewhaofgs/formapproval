@@ -1066,6 +1066,36 @@
     font-size: 13px;
   }
 
+  .dashboard-process-group {
+    display: grid;
+    gap: 12px;
+    border-top: 2px solid var(--line-strong);
+    padding-top: 16px;
+  }
+
+  .dashboard-process-group:first-of-type {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .dashboard-process-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: end;
+    gap: 14px;
+  }
+
+  .dashboard-process-heading h3 {
+    margin: 0 0 3px;
+    color: var(--navy);
+    font-size: 20px;
+  }
+
+  .dashboard-process-sections {
+    display: grid;
+    gap: 10px;
+  }
+
   .dashboard-section {
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -2096,6 +2126,11 @@
 
     .dashboard-filter-meta {
       justify-content: flex-start;
+    }
+
+    .dashboard-process-heading {
+      align-items: flex-start;
+      flex-direction: column;
     }
 
     .dashboard-section summary {
