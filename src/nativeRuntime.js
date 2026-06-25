@@ -30,6 +30,7 @@ const EXPORTED_NAMES = [
   'DEFAULT_PROCESS_DEFINITIONS',
   'FORM_DEFINITIONS',
   'getInitialState_',
+  'submitFeedback',
   'submitRequest',
   'submitApprovalDecision',
   'submitDashboardApprovalDecision',

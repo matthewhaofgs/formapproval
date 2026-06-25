@@ -50,6 +50,7 @@
 
   bindGlobalLoadingIndicators();
   applyTopNavRoleVisibility();
+  bindFeedbackActions();
   render();
 
   function render() {
@@ -194,6 +195,101 @@
       }
       link.hidden = !dashboardState.roleAvailability[role];
     });
+  }
+
+  function bindFeedbackActions() {
+    document.querySelectorAll('[data-feedback-open]').forEach(button => {
+      if (button.dataset.bound === 'true') {
+        return;
+      }
+      button.dataset.bound = 'true';
+      button.addEventListener('click', openFeedbackDialog);
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        closeFeedbackDialog();
+      }
+    });
+  }
+
+  function feedbackDialogElement() {
+    let dialog = document.getElementById('feedback-dialog');
+    if (!dialog) {
+      document.body.insertAdjacentHTML('beforeend', renderFeedbackDialog());
+      dialog = document.getElementById('feedback-dialog');
+      bindFeedbackDialog(dialog);
+    }
+    return dialog;
+  }
+
+  function renderFeedbackDialog() {
+    return `
+      <div class="feedback-dialog" id="feedback-dialog" data-feedback-dialog role="dialog" aria-modal="true" aria-labelledby="feedback-title" hidden>
+        <div class="feedback-backdrop" data-feedback-close></div>
+        <form class="feedback-panel stack" data-feedback-form novalidate>
+          <div class="panel-header">
+            <div>
+              <h2 id="feedback-title">Feedback</h2>
+              <p>Send feedback or suggestions about the forms site and processes.</p>
+            </div>
+            <button class="button secondary" type="button" data-feedback-close>Close</button>
+          </div>
+          <label class="field">
+            <span>Email</span>
+            <input name="email" type="email" value="${escapeHtml(state.currentUserEmail || '')}" readonly>
+          </label>
+          <label class="field full">
+            <span>Message</span>
+            <textarea name="message" rows="7" maxlength="4000" required></textarea>
+          </label>
+          <div class="actions inline">
+            <button class="button secondary" type="button" data-feedback-close>Cancel</button>
+            <button class="button primary" type="submit">Send feedback</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  function bindFeedbackDialog(dialog) {
+    dialog.querySelectorAll('[data-feedback-close]').forEach(button => {
+      button.addEventListener('click', closeFeedbackDialog);
+    });
+    const form = dialog.querySelector('[data-feedback-form]');
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (!form.reportValidity()) {
+        return;
+      }
+      const data = collectForm(form);
+      data.email = state.currentUserEmail || data.email;
+      data.pageUrl = window.location.href;
+      submitWithContainer(form, 'submitFeedback', data, result => {
+        form.reset();
+        const emailInput = form.querySelector('input[name="email"]');
+        if (emailInput) {
+          emailInput.value = state.currentUserEmail || '';
+        }
+        closeFeedbackDialog();
+        showNotice(result.message || 'Feedback sent.', 'success');
+      });
+    });
+  }
+
+  function openFeedbackDialog() {
+    const dialog = feedbackDialogElement();
+    dialog.hidden = false;
+    const textarea = dialog.querySelector('textarea[name="message"]');
+    if (textarea) {
+      textarea.focus();
+    }
+  }
+
+  function closeFeedbackDialog() {
+    const dialog = document.getElementById('feedback-dialog');
+    if (dialog) {
+      dialog.hidden = true;
+    }
   }
 
   function bindDashboardShell() {
@@ -3815,6 +3911,7 @@
   function progressMessageForMethod(method, payload) {
     const messages = {
       getDashboardData: 'Loading dashboard...',
+      submitFeedback: 'Sending feedback...',
       submitRequest: 'Submitting request...',
       submitEditedRequest: 'Submitting changes...',
       submitActualHours: 'Submitting actual hours...',

@@ -100,6 +100,7 @@
   }
 
   .topnav a,
+  .topnav button,
   .tabs button {
     border: 1px solid rgba(234, 223, 181, .55);
     border-radius: 6px;
@@ -111,8 +112,15 @@
     font-size: 13px;
   }
 
+  .topnav button {
+    cursor: pointer;
+    font-family: inherit;
+  }
+
   .topnav a:hover,
-  .topnav a:focus-visible {
+  .topnav a:focus-visible,
+  .topnav button:hover,
+  .topnav button:focus-visible {
     border-color: #fff;
     background: rgba(255, 255, 255, .16);
   }
@@ -882,6 +890,39 @@
     padding: 3px 8px;
     font-size: 12px;
     font-weight: 800;
+  }
+
+  .feedback-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+  }
+
+  .feedback-dialog[hidden] {
+    display: none;
+  }
+
+  .feedback-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(2, 29, 73, .48);
+    backdrop-filter: blur(2px);
+  }
+
+  .feedback-panel {
+    position: relative;
+    width: min(620px, 100%);
+    max-height: min(720px, calc(100vh - 40px));
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-top: 4px solid var(--red);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 20px;
+    box-shadow: 0 24px 58px rgba(2, 29, 73, .28);
   }
 
   .dashboard-context {

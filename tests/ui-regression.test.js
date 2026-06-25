@@ -58,6 +58,21 @@ test('navigation and dashboard copy use My Requests instead of Requester', () =>
   assert.doesNotMatch(server, /status-pill/);
 });
 
+test('authenticated users can open and submit site feedback', () => {
+  assert.match(html, /data-feedback-open>Feedback<\/button>/);
+  assert.match(server, /data-feedback-open>Feedback<\/button>/);
+  assert.match(js, /function renderFeedbackDialog\(\)/);
+  assert.match(js, /data-feedback-form/);
+  assert.match(js, /submitWithContainer\(form, 'submitFeedback'/);
+  assert.match(js, /submitFeedback: 'Sending feedback\.\.\.'/);
+  assert.match(css, /\.feedback-dialog\s*\{/);
+  assert.match(css, /\.topnav button/);
+  assert.match(config, /FEEDBACK_EMAIL:\s*'it\+formsfeedback@ofg\.nsw\.edu\.au'/);
+  assert.match(email, /function sendFeedbackEmail_\(feedback\)/);
+  assert.match(server, /'submitFeedback'/);
+  assert.match(nativeRuntime, /'submitFeedback'/);
+});
+
 test('native server requires OAuth for the whole site and API', () => {
   assert.match(server, /const OAUTH_ALLOWED_DOMAIN = String\(process\.env\.OAUTH_ALLOWED_DOMAIN \|\| ''\)/);
   assert.match(server, /'submitRequest'/);

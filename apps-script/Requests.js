@@ -235,6 +235,31 @@ function processKeyFromParams_(params) {
   return trim_((params && (params.process || params.form || params.type || params.processType)) || '').toLowerCase();
 }
 
+function submitFeedback(payload) {
+  ensureReady_();
+  const actorEmail = getAuthenticatedEmail_(payload || {});
+  const message = trim_(payload && payload.message);
+  if (!message) {
+    throw new Error('Feedback message is required.');
+  }
+  if (message.length > 4000) {
+    throw new Error('Feedback message must be 4000 characters or fewer.');
+  }
+
+  const pageUrl = trim_(payload && payload.pageUrl).slice(0, 500);
+  const result = sendFeedbackEmail_({
+    email: actorEmail,
+    message,
+    pageUrl,
+    submittedAt: nowIso_()
+  });
+  return {
+    ok: true,
+    message: 'Feedback sent.',
+    recipient: result.recipient
+  };
+}
+
 function submitRequest(form) {
   ensureReady_();
   const lock = LockService.getScriptLock();

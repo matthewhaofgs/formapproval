@@ -24,6 +24,7 @@ const OFG_CREST = 'https://ofg.nsw.edu.au/wp-content/uploads/2020/12/OFG_Crest-W
 const runtime = createNativeRuntime({ webAppUrl: APP_BASE_URL });
 
 const API_METHODS = new Set([
+  'submitFeedback',
   'submitRequest',
   'submitApprovalDecision',
   'submitDashboardApprovalDecision',
@@ -336,6 +337,7 @@ function renderTopNav(state, authLink) {
   if (dashboardRoleAvailable(state, 'admin')) {
     links.push(`<a href="${escapeHtml(APP_BASE_URL)}?mode=dashboard&role=admin" data-nav-role="admin">Admin</a>`);
   }
+  links.push('<button type="button" data-feedback-open>Feedback</button>');
   if (authLink) {
     links.push(authLink);
   }

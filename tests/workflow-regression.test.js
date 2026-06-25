@@ -2357,6 +2357,27 @@ test('dashboard pages lazy-load request data for rolling load estimates', () => 
   assert.equal(harness.api.getDashboardData({ role: 'requester' }).requests.length, 1);
 });
 
+test('authenticated users can submit forms-site feedback by email', () => {
+  const harness = createAppsScriptHarness({ activeEmail: 'teacher@example.edu' });
+  const result = harness.api.submitFeedback({
+    message: 'Please add clearer VTR checklist wording.',
+    pageUrl: 'https://forms.ofg.nsw.edu.au/?mode=dashboard&role=requester'
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recipient, 'it+formsfeedback@ofg.nsw.edu.au');
+  assert.equal(harness.mail.length, 1);
+  assert.equal(harness.mail[0].to, 'it+formsfeedback@ofg.nsw.edu.au');
+  assert.equal(harness.mail[0].subject, 'OFG Forms feedback');
+  assert.match(harness.mail[0].body, /teacher@example\.edu/);
+  assert.match(harness.mail[0].body, /Please add clearer VTR checklist wording\./);
+  assert.match(harness.mail[0].body, /forms\.ofg\.nsw\.edu\.au/);
+  assert.throws(
+    () => harness.api.submitFeedback({ message: '' }),
+    /Feedback message is required/
+  );
+});
+
 test('code-configured global admins are merged with the worksheet ADMIN_EMAILS row', () => {
   const harness = createAppsScriptHarness({ activeEmail: 'codeadmin@example.edu' });
   harness.api.DEFAULT_ADMIN_EMAILS.splice(0, harness.api.DEFAULT_ADMIN_EMAILS.length, 'codeadmin@example.edu', 'security@example.edu');

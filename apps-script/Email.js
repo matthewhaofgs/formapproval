@@ -241,6 +241,34 @@ function sendRelatedDeniedEmail_(request, stage, stepName, comment, actorEmail) 
   sendEmail_(recipients.join(','), subject, htmlBody);
 }
 
+function sendFeedbackEmail_(feedback) {
+  const sender = normalizeEmail_(feedback && feedback.email);
+  const message = trim_(feedback && feedback.message);
+  const pageUrl = trim_(feedback && feedback.pageUrl);
+  const submittedAt = feedback && feedback.submittedAt ? feedback.submittedAt : nowIso_();
+  const recipient = APP_SETTINGS.FEEDBACK_EMAIL || 'it+formsfeedback@ofg.nsw.edu.au';
+  const subject = 'OFG Forms feedback';
+  const rows = [
+    ['Submitted', formatDateTimeForEmail_(submittedAt)],
+    ['From', sender],
+    ['Page', pageUrl]
+  ].filter(function (row) {
+    return row[1];
+  });
+  const htmlBody = emailShell_(
+    'OFG Forms feedback',
+    processSummaryTable_(rows) +
+      '<p><strong>Feedback</strong></p>' +
+      `<p>${escapeHtml_(message).replace(/\n/g, '<br>')}</p>`
+  );
+
+  sendEmail_(recipient, subject, htmlBody);
+  return {
+    recipient,
+    subject
+  };
+}
+
 function deniedRelatedRecipientEmails_(request, actorEmail) {
   const emails = [];
   emails.push(request.requesterEmail);

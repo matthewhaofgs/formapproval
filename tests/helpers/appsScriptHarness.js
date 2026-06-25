@@ -37,6 +37,7 @@ const EXPORTED_NAMES = [
   'getDatabaseDiagnostic',
   'setup',
   'getInitialState_',
+  'submitFeedback',
   'submitRequest',
   'submitApprovalDecision',
   'submitDashboardApprovalDecision',
