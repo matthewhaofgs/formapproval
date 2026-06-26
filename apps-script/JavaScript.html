@@ -1528,8 +1528,9 @@
       return `
         <form class="dashboard-approval stack" data-request-id="${escapeHtml(request.requestId)}">
           <label class="field full">
-            <span>Comment</span>
-            <textarea name="comment"></textarea>
+            <span>Reason / comment</span>
+            <textarea name="comment" data-decision-comment></textarea>
+            <span class="help">Required when denying or requesting changes. This is included in request emails and history.</span>
           </label>
           <div class="actions inline">
             ${request.canDeny ? '<button class="button danger" type="button" data-dashboard-decision="deny">Deny</button>' : ''}
@@ -1916,9 +1917,13 @@
     document.querySelectorAll('[data-dashboard-decision]').forEach(button => {
       button.addEventListener('click', event => {
         const form = event.currentTarget.closest('form');
+        const decision = event.currentTarget.dataset.dashboardDecision;
+        if (!validateDecisionComment(form, decision)) {
+          return;
+        }
         const data = collectForm(form);
         data.requestId = form.dataset.requestId;
-        data.decision = event.currentTarget.dataset.dashboardDecision;
+        data.decision = decision;
         data.email = dashboardState.email;
         submitWithContainer(form, 'submitDashboardApprovalDecision', data, result => {
           showNotice(result.message, 'success');
@@ -2954,8 +2959,9 @@
         ${renderHistory(request)}
         <form id="approval-form" class="stack">
           <label class="field full">
-            <span>Comment</span>
-            <textarea name="comment"></textarea>
+            <span>Reason / comment</span>
+            <textarea name="comment" data-decision-comment></textarea>
+            <span class="help">Required when denying or requesting changes. This is included in request emails and history.</span>
           </label>
           <div class="actions">
             ${approval.canDeny ? '<button class="button danger" type="button" data-decision="deny">Deny</button>' : ''}
@@ -3431,15 +3437,35 @@
     document.querySelectorAll('[data-decision]').forEach(button => {
       button.addEventListener('click', event => {
         const form = document.getElementById('approval-form');
+        const decision = event.currentTarget.dataset.decision;
+        if (!validateDecisionComment(form, decision)) {
+          return;
+        }
         const data = collectForm(form);
         data.token = state.token;
-        data.decision = event.currentTarget.dataset.decision;
+        data.decision = decision;
         submitWithContainer(form, 'submitApprovalDecision', data, result => {
           showNotice(result.message, 'success');
           app.innerHTML = renderMessagePanel('Decision recorded', result.message, `<div class="actions inline"><a class="button secondary" href="${escapeHtml(appUrl('dashboard', { role: 'approver' }))}">Open workflow dashboard</a></div>`);
         });
       });
     });
+  }
+
+  function validateDecisionComment(form, decision) {
+    if (decision !== 'deny' && decision !== 'changes') {
+      return true;
+    }
+    const field = form ? form.querySelector('[data-decision-comment]') : null;
+    if (!field || normalize(field.value)) {
+      return true;
+    }
+    field.setCustomValidity(decision === 'deny'
+      ? 'Enter a reason before denying this request.'
+      : 'Enter a comment before requesting changes.');
+    field.reportValidity();
+    field.addEventListener('input', () => field.setCustomValidity(''), { once: true });
+    return false;
   }
 
   function bindActualHours() {

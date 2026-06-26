@@ -677,8 +677,10 @@ function validateWorkflowDecision_(step, decision, comment) {
       : (step && step.type === 'action' ? 'action' : 'approval');
     throw new Error(`This ${stepLabel} step does not allow "${decision}".`);
   }
-  if (decision === 'changes' && !comment) {
-    throw new Error('A comment is required when requesting changes.');
+  if ((decision === 'changes' || decision === 'deny') && !comment) {
+    throw new Error(decision === 'deny'
+      ? 'A reason is required when denying a request.'
+      : 'A comment is required when requesting changes.');
   }
 }
 

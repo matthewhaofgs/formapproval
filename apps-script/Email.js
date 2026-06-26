@@ -494,14 +494,14 @@ function workflowDecisionButtonsHtml_(webAppUrl, token, step) {
   ];
 
   if (workflowStepAllowsDecision_(step, 'deny')) {
-    buttons.push(inlineButtonHtml_(workflowDecisionUrl_(webAppUrl, token, 'deny'), 'Deny', '#ce0e2d'));
+    buttons.push(inlineButtonHtml_(`${webAppUrl}?mode=approve&token=${encodeURIComponent(token)}`, 'Deny', '#ce0e2d'));
   }
 
   return [
     '<div style="margin:22px 0 10px;">',
     buttons.join(''),
     '</div>',
-    '<p style="margin:0 0 10px;color:#626a76;font-size:12px;">These email buttons record the decision immediately. Use the review link if you need to request changes or add a comment.</p>'
+    '<p style="margin:0 0 10px;color:#626a76;font-size:12px;">Approve records the decision immediately. Deny opens the review page so a reason can be entered.</p>'
   ].join('');
 }
 

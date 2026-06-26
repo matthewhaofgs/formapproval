@@ -70,6 +70,9 @@ function getInitialState_(params) {
     }
 
     const decision = String(params.decision || '').toLowerCase();
+    if (decision === 'deny') {
+      return getInitialState_(Object.assign({}, params, { mode: 'approve' }));
+    }
     if (decision === 'changes') {
       return errorState_('Request changes cannot be completed from an email link because a comment is required.');
     }

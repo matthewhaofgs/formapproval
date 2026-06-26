@@ -545,6 +545,17 @@ test('approval history renders adjustments with requester or approver, comments,
   assert.match(js, /visibleChangeHistoryEntries\(changeHistory\)/);
 });
 
+test('denial actions require a visible reason before notifying request parties', () => {
+  assert.match(js, /<span>Reason \/ comment<\/span>/);
+  assert.match(js, /data-decision-comment/);
+  assert.match(js, /Required when denying or requesting changes/);
+  assert.match(js, /function validateDecisionComment\(form, decision\)/);
+  assert.match(js, /decision !== 'deny' && decision !== 'changes'/);
+  assert.match(js, /Enter a reason before denying this request/);
+  assert.match(email, /Deny opens the review page so a reason can be entered/);
+  assert.doesNotMatch(email, /workflowDecisionUrl_\(webAppUrl, token, 'deny'\)/);
+});
+
 test('approval history binds named entries to their workflow step before falling back to approver email', () => {
   assert.match(js, /function workflowEntryMatchesStep\(entry, step\) \{[\s\S]*?const entryStepName = normalize\(entry\.stepName\);[\s\S]*?if \(entryStepName\) \{[\s\S]*?return entryStepName === normalize\(step\.name\);[\s\S]*?\}[\s\S]*?return normalize\(entry\.approverEmail\) === normalize\(step\.email\);[\s\S]*?\}/);
 });

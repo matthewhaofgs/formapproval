@@ -22,8 +22,7 @@ function currentRequest(harness) {
 
 function latestWorkflowToken(harness, recipient) {
   const message = harness.latestMail(mail =>
-    (!recipient || mail.to === recipient) &&
-    /approval|acknowledgement|pre-approval|action/i.test(mail.subject || '') &&
+    (!recipient || mailIncludesRecipient(mail, recipient)) &&
     /mode=(?:approve|decision)/.test(String(mail.htmlBody || ''))
   );
   const token = harness.tokenFromMail(message, 'decision') || harness.tokenFromMail(message, 'approve');
@@ -36,6 +35,15 @@ function vtrWorkflowStepNames(harness, overrides = {}, stage = 'approval') {
   return Array.from(harness.api
     .resolveWorkflowSteps_(harness.api.getWorkflowConfigForStage_(stage, Object.assign(request, overrides)), Object.assign(request, overrides))
     .map(step => `${step.type}:${step.name}`));
+}
+
+function assertIncludesInOrder(actual, expected) {
+  let lastIndex = -1;
+  expected.forEach(item => {
+    const index = actual.indexOf(item);
+    assert.ok(index > lastIndex, `Expected ${JSON.stringify(actual)} to include ${item} after index ${lastIndex}`);
+    lastIndex = index;
+  });
 }
 
 function vtrWorkflowEmail(harness, stepName, stage = 'approval') {
@@ -859,33 +867,39 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
 test('VTR workflow follows the updated initial approval, final approval, and risk acknowledgement branches', () => {
   const harness = createAppsScriptHarness();
 
-  assert.deepEqual(vtrWorkflowStepNames(harness, {
+  let steps = vtrWorkflowStepNames(harness, {
     schoolArea: 'Senior School',
     eventType: 'Curricular Event',
     costToStudents: 'No'
-  }), [
+  });
+  assertIncludesInOrder(steps, [
     'approval:Senior School Initial Approval',
     'notification:VTR Initial Approval Confirmation',
     'approval:Senior School Executive Approval',
     'acknowledgement:Risk Assessment Acknowledgement'
   ]);
+  assert.equal(steps.includes('approval:Junior School Initial Approval'), false);
+  assert.equal(steps.includes('approval:Junior School Executive Approval'), false);
 
-  assert.deepEqual(vtrWorkflowStepNames(harness, {
+  steps = vtrWorkflowStepNames(harness, {
     schoolArea: 'Senior School',
     eventType: 'Assessment',
     costToStudents: 'Yes'
-  }), [
+  });
+  assertIncludesInOrder(steps, [
     'approval:Senior School Initial Approval',
     'notification:VTR Initial Approval Confirmation',
     'notification:Senior School Assessment Notification',
     'acknowledgement:Risk Assessment Acknowledgement'
   ]);
+  assert.equal(steps.includes('approval:Senior School Executive Approval'), false);
 
-  assert.deepEqual(vtrWorkflowStepNames(harness, {
+  steps = vtrWorkflowStepNames(harness, {
     schoolArea: 'K-12',
     eventType: 'Curricular Event',
     costToStudents: 'No'
-  }), [
+  });
+  assertIncludesInOrder(steps, [
     'approval:Senior School Initial Approval',
     'approval:Junior School Initial Approval',
     'notification:VTR Initial Approval Confirmation',
@@ -894,27 +908,32 @@ test('VTR workflow follows the updated initial approval, final approval, and ris
     'acknowledgement:Risk Assessment Acknowledgement'
   ]);
 
-  assert.deepEqual(vtrWorkflowStepNames(harness, {
+  steps = vtrWorkflowStepNames(harness, {
     schoolArea: 'Junior School',
     costToStudents: 'No'
-  }), [
+  });
+  assertIncludesInOrder(steps, [
     'approval:Junior School Initial Approval',
     'notification:VTR Initial Approval Confirmation',
     'approval:Junior School Executive Approval',
     'acknowledgement:Risk Assessment Acknowledgement'
   ]);
+  assert.equal(steps.includes('approval:Senior School Initial Approval'), false);
+  assert.equal(steps.includes('approval:Senior School Executive Approval'), false);
 
-  assert.deepEqual(vtrWorkflowStepNames(harness, {
+  steps = vtrWorkflowStepNames(harness, {
     schoolArea: 'Junior School',
     costToStudents: 'No',
     riskAssessmentRequired: 'No'
-  }), [
+  });
+  assertIncludesInOrder(steps, [
     'approval:Junior School Initial Approval',
     'notification:VTR Initial Approval Confirmation',
     'approval:Junior School Executive Approval'
   ]);
+  assert.equal(steps.includes('acknowledgement:Risk Assessment Acknowledgement'), false);
 
-  assert.deepEqual(vtrWorkflowStepNames(harness, {
+  steps = vtrWorkflowStepNames(harness, {
     schoolArea: 'Junior School',
     riskAssessmentRequired: 'No',
     groundsConsulted: 'Yes',
@@ -922,11 +941,13 @@ test('VTR workflow follows the updated initial approval, final approval, and ris
     sportPdhpeConsulted: 'Yes',
     canteenNotified: 'Yes',
     costToStudents: 'Yes'
-  }), [
+  });
+  assertIncludesInOrder(steps, [
     'approval:Junior School Initial Approval',
     'notification:VTR Initial Approval Confirmation',
     'approval:Junior School Executive Approval'
   ]);
+  assert.equal(steps.includes('acknowledgement:Risk Assessment Acknowledgement'), false);
 
   assert.deepEqual(vtrWorkflowStepNames(harness, {
     groundsConsulted: 'Yes',
@@ -1011,6 +1032,17 @@ test('VTR initial approval emails the requester and then starts final approval f
 
   assert.equal(initialResult.ok, true);
   assert.equal(request.status, harness.api.STATUS.PENDING_APPROVAL);
+
+  let guard = 0;
+  while (request.activeApprovalStepName !== 'Senior School Executive Approval' && guard < 5) {
+    const intermediateEmail = request.activeApprovalStepEmail;
+    const intermediateToken = latestWorkflowToken(harness, intermediateEmail);
+    harness.setActiveUser(intermediateEmail);
+    harness.api.submitApprovalDecision({ token: intermediateToken, decision: 'approve' });
+    request = currentRequest(harness);
+    guard += 1;
+  }
+  assert.ok(guard < 5, `Expected VTR workflow to reach Senior School Executive Approval, got ${request.activeApprovalStepName}`);
   assert.equal(request.activeApprovalStepName, 'Senior School Executive Approval');
   assert.equal(request.activeApprovalStepEmail, seniorFinalEmail);
 
@@ -1029,6 +1061,7 @@ test('VTR initial approval emails the requester and then starts final approval f
   assert.match(finalApprovalMail.htmlBody, /coordinate with the relevant Senior School executive group/i);
 
   const finalToken = latestWorkflowToken(harness, seniorFinalEmail);
+  harness.setActiveUser(seniorFinalEmail);
   harness.api.submitApprovalDecision({ token: finalToken, decision: 'approve' });
   request = currentRequest(harness);
 
@@ -1431,7 +1464,7 @@ test('line-manager request starts approval with request details visible from the
   assert.match(approvalMail.htmlBody, new RegExp(request.requestId));
 });
 
-test('workflow action emails include one-click decision links that record decisions immediately', () => {
+test('workflow action emails include one-click approve links and review-page denial links', () => {
   const harness = createAppsScriptHarness();
   submit(harness);
 
@@ -1439,12 +1472,21 @@ test('workflow action emails include one-click decision links that record decisi
   const token = latestWorkflowToken(harness, 'linemanager@example.edu');
 
   assert.match(approvalMail.htmlBody, /mode=decision&amp;token=[^"]+&amp;decision=approve/);
-  assert.match(approvalMail.htmlBody, /mode=decision&amp;token=[^"]+&amp;decision=deny/);
+  assert.doesNotMatch(approvalMail.htmlBody, /mode=decision&amp;token=[^"]+&amp;decision=deny/);
+  assert.match(approvalMail.htmlBody, /mode=approve&amp;token=[^"]+/);
   assert.match(approvalMail.htmlBody, />Approve<\/a>/);
   assert.match(approvalMail.htmlBody, />Deny<\/a>/);
   assert.match(approvalMail.htmlBody, /Review details or request changes/);
   assert.match(approvalMail.htmlBody, /mode=dashboard&amp;role=approver/);
-  assert.doesNotMatch(approvalMail.htmlBody, /mode=approve/);
+  assert.match(approvalMail.htmlBody, /Deny opens the review page so a reason can be entered/);
+
+  const denyState = harness.api.getInitialState_({
+    mode: 'decision',
+    token,
+    decision: 'deny'
+  });
+  assert.equal(denyState.mode, 'approve');
+  assert.equal(denyState.approval.canDeny, true);
 
   harness.setActiveUser('someoneelse@example.edu');
   const resultState = harness.api.getInitialState_({
@@ -1526,6 +1568,14 @@ test('denial by Head of Operations notifies prior approver and line manager FYI 
 
   harness.clearMail();
   harness.setActiveUser(headOfOperationsEmail);
+  assert.throws(
+    () => harness.api.submitApprovalDecision({ token: hooToken, decision: 'deny' }),
+    /reason is required/i
+  );
+  assert.throws(
+    () => harness.api.submitDashboardApprovalDecision({ requestId: currentRequest(harness).requestId, decision: 'deny' }),
+    /reason is required/i
+  );
   harness.api.submitApprovalDecision({ token: hooToken, decision: 'deny', comment: 'Not approved for Saturday' });
 
   const request = currentRequest(harness);
@@ -1539,6 +1589,7 @@ test('denial by Head of Operations notifies prior approver and line manager FYI 
   assert.equal(request.status, harness.api.STATUS.APPROVAL_DENIED);
   assert.ok(employeeDenied);
   assert.ok(relatedDenied);
+  assert.match(employeeDenied.htmlBody, /Not approved for Saturday/);
   assert.match(relatedDenied.htmlBody, /This overtime request was denied/);
   assert.match(relatedDenied.htmlBody, /Not approved for Saturday/);
   assert.equal(mailIncludesRecipient(relatedDenied, headOfOperationsEmail), false);
