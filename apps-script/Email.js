@@ -29,6 +29,7 @@ function sendWorkflowActionEmail_(request, step, token, isReminder) {
   const htmlBody = emailShell_(
     `${isReminder ? 'Reminder: ' : ''}${heading}`,
     `<p>${escapeHtml_(intro)}</p>` +
+      (step && step.requireComment ? '<p><strong>Notes required:</strong> Enter notes before completing this step. These notes are stored in the workflow history.</p>' : '') +
       summaryTable_(request, isFinal) +
       workflowDecisionButtonsHtml_(webAppUrl, token, step) +
       secondaryLinkHtml_(dashboardUrl, 'Review details or request changes')
@@ -39,7 +40,9 @@ function sendWorkflowActionEmail_(request, step, token, isReminder) {
 
 function sendWorkflowNotificationEmail_(request, step, stage) {
   const recipientList = [].concat(step.emails || [step.email]).map(normalizeEmail_).filter(Boolean);
+  const ccList = uniqueEmailRecipients_(step.ccEmails || [], recipientList);
   const recipients = recipientList.join(',');
+  const ccRecipients = ccList.join(',');
   if (!recipientList.length) {
     return null;
   }
@@ -61,9 +64,10 @@ function sendWorkflowNotificationEmail_(request, step, stage) {
       summaryTable_(request, isFinal)
   );
 
-  sendEmail_(recipients, `${request.requestId}: ${heading.toLowerCase()}`, htmlBody);
+  sendEmail_(recipients, `${request.requestId}: ${heading.toLowerCase()}`, htmlBody, ccRecipients);
   return {
     recipients: recipientList,
+    ccRecipients: ccList,
     subject: `${request.requestId}: ${heading.toLowerCase()}`
   };
 }

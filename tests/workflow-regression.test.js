@@ -100,6 +100,14 @@ function mailIncludesRecipient(mail, email) {
     .includes(expected);
 }
 
+function mailCcIncludesRecipient(mail, email) {
+  const expected = String(email || '').toLowerCase();
+  return String((mail && mail.cc) || '')
+    .split(',')
+    .map(value => value.trim().toLowerCase())
+    .includes(expected);
+}
+
 function setOvertimeApprovalWorkflow(harness, steps) {
   harness.api.DEFAULT_PROCESS_DEFINITIONS.overtime.workflows.approval = steps;
 }
@@ -1641,7 +1649,7 @@ test('acknowledgement steps block the workflow but cannot deny', () => {
 test('action steps block the workflow with a complete-action label and cannot deny', () => {
   const harness = createAppsScriptHarness();
   setOvertimeApprovalWorkflow(harness, [
-    { type: 'action', name: 'Daily Organisation Action', email: 'dailyorg@example.edu' }
+    { type: 'action', name: 'Daily Organisation Action', email: 'dailyorg@example.edu', requireComment: true }
   ]);
 
   submit(harness);
@@ -1657,13 +1665,90 @@ test('action steps block the workflow with a complete-action label and cannot de
     () => harness.api.submitApprovalDecision({ token, decision: 'deny', comment: 'No' }),
     /action step does not allow "deny"/
   );
+  assert.throws(
+    () => harness.api.submitApprovalDecision({ token, decision: 'acknowledge' }),
+    /Notes are required/
+  );
 
-  const result = harness.api.submitApprovalDecision({ token, decision: 'acknowledge' });
+  const result = harness.api.submitApprovalDecision({ token, decision: 'acknowledge', comment: 'Roster updated.' });
   const history = JSON.parse(currentRequest(harness).approvalHistory);
 
   assert.equal(result.ok, true);
   assert.equal(currentRequest(harness).status, harness.api.STATUS.PREAPPROVED);
   assert.equal(history[0].decision, 'completed action');
+  assert.equal(history[0].comment, 'Roster updated.');
+});
+
+test('TOIL requests route to payroll for verification with required notes before manager approval', () => {
+  const harness = createAppsScriptHarness();
+  const toilOption = 'Accumulate for later Time Off in Lieu (TOIL)';
+  const condition = { field: 'compensationMethod', equals: toilOption };
+
+  setOvertimeApprovalWorkflow(harness, [
+    {
+      type: 'action',
+      name: 'Payroll TOIL Verification',
+      email: 'payroll@example.edu',
+      requireComment: true,
+      subject: 'TOIL availability verification needed',
+      message: 'Verify TOIL availability against the EBA only. This is not authorization of the overtime itself.',
+      waitingLabel: 'Payroll <payroll@example.edu> to verify TOIL availability',
+      when: condition
+    },
+    {
+      type: 'notification',
+      name: 'TOIL Payroll Confirmation',
+      emailField: 'employeeEmail',
+      ccEmails: ['payroll@example.edu'],
+      subject: 'TOIL request sent to payroll',
+      message: 'Your request has been sent to payroll team. If the MEA criteria is met, you will be able to bank TOIL',
+      when: condition
+    },
+    {
+      type: 'approval',
+      name: 'Line Manager',
+      emailField: 'lineManagerEmail',
+      waitingLabel: '{Step name} <{Step email}> to {Action}'
+    }
+  ]);
+
+  submit(harness, { compensationMethod: toilOption });
+  let request = currentRequest(harness);
+  assert.equal(request.activeApprovalStepName, 'Payroll TOIL Verification');
+  assert.equal(request.activeApprovalStepEmail, 'payroll@example.edu');
+
+  const payrollMail = harness.latestMail(mail => mail.to === 'payroll@example.edu');
+  assert.ok(payrollMail);
+  assert.match(payrollMail.htmlBody, /not authorization of the overtime itself/i);
+  assert.match(payrollMail.htmlBody, /Notes required/);
+
+  const payrollToken = latestWorkflowToken(harness, 'payroll@example.edu');
+  harness.setActiveUser('payroll@example.edu');
+  assert.throws(
+    () => harness.api.submitApprovalDecision({ token: payrollToken, decision: 'acknowledge' }),
+    /Notes are required/
+  );
+  harness.api.submitApprovalDecision({
+    token: payrollToken,
+    decision: 'acknowledge',
+    comment: 'Eligible under MEA criteria.'
+  });
+
+  request = currentRequest(harness);
+  assert.equal(request.activeApprovalStepName, 'Line Manager');
+  assert.equal(request.activeApprovalStepEmail, 'linemanager@example.edu');
+
+  const requesterMail = harness.latestMail(mail => mail.to === 'employee@example.edu' && /TOIL request sent to payroll/i.test(mail.subject || ''));
+  assert.ok(requesterMail);
+  assert.match(requesterMail.htmlBody, /If the MEA criteria is met, you will be able to bank TOIL/);
+  assert.equal(mailCcIncludesRecipient(requesterMail, 'payroll@example.edu'), true);
+
+  const history = JSON.parse(request.approvalHistory);
+  assert.equal(history[0].stepName, 'Payroll TOIL Verification');
+  assert.equal(history[0].decision, 'completed action');
+  assert.equal(history[0].comment, 'Eligible under MEA criteria.');
+  assert.equal(history[1].stepName, 'TOIL Payroll Confirmation');
+  assert.deepEqual(Array.from(history[1].ccRecipients), ['payroll@example.edu']);
 });
 
 test('notification steps allow many recipients, while blocking steps must resolve to one recipient', () => {

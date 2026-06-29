@@ -204,12 +204,14 @@ function workflowStepToConfigRow_(definition, stage, step, index) {
     emails: (step.emails || []).join(', '),
     emailField: step.emailField || '',
     emailFields: (step.emailFields || []).join(', '),
+    ccEmails: (step.ccEmails || []).join(', '),
     subject: step.subject || '',
     message: step.message || '',
     waitingLabel: isBlockingWorkflowStepType_(step.type || 'approval') ? (step.waitingLabel || defaultWorkflowWaitingLabel_()) : '',
     whenJson: step.when ? JSON.stringify(step.when) : '',
     unlessJson: step.unless ? JSON.stringify(step.unless) : '',
     followUpStage: step.followUpStage || '',
+    requireComment: step.requireComment ? 'Yes' : '',
     enabled: definition.enabled === false ? 'No' : 'Yes',
     notes: 'Workflow steps run in stage/order sequence. Types: approval, acknowledgement, action, notification. Optional followUpStage starts an employee follow-up form after the step completes.'
   };

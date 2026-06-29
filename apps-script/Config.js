@@ -103,12 +103,14 @@ const CONFIG_HEADERS = [
   'emails',
   'emailField',
   'emailFields',
+  'ccEmails',
   'subject',
   'message',
   'waitingLabel',
   'whenJson',
   'unlessJson',
   'followUpStage',
+  'requireComment',
   'setting',
   'valueJson',
   'enabled',
@@ -418,12 +420,14 @@ function configRowToWorkflowStep_(row) {
     emails: splitList_(row.emails),
     emailField: row.emailField,
     emailFields: splitList_(row.emailFields),
+    ccEmails: splitList_(row.ccEmails),
     subject: row.subject,
     message: row.message,
     waitingLabel: isBlockingWorkflowStepType_(type) ? (row.waitingLabel || defaultWorkflowWaitingLabel_()) : '',
     when: parseJsonValue_(row.whenJson, ''),
     unless: parseJsonValue_(row.unlessJson, ''),
-    followUpStage: row.followUpStage
+    followUpStage: row.followUpStage,
+    requireComment: valueIsTruthy_(row.requireComment)
   };
 
   Object.keys(step).forEach(function (key) {
@@ -442,6 +446,13 @@ function splitList_(value) {
     .split(',')
     .map(trim_)
     .filter(Boolean);
+}
+
+function valueIsTruthy_(value) {
+  if (value === true) {
+    return true;
+  }
+  return ['true', 'yes', '1', 'on'].indexOf(String(value || '').trim().toLowerCase()) !== -1;
 }
 
 function parseJsonValue_(value, defaultValue) {

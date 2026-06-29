@@ -119,10 +119,11 @@ function advanceWorkflow_(request, stage, currentIndex, messagePrefix, actorEmai
       if (!notification) {
         continue;
       }
-      recordWorkflowNotificationHistory_(request, stage, step, notification.recipients);
+      recordWorkflowNotificationHistory_(request, stage, step, notification.recipients, notification.ccRecipients);
       logEvent_(request.requestId, actorEmail || 'system', stage === 'final' ? 'FINAL_NOTIFICATION_SENT' : 'APPROVAL_NOTIFICATION_SENT', {
         stepName: step.name,
-        recipients: notification.recipients
+        recipients: notification.recipients,
+        ccRecipients: notification.ccRecipients
       });
       sentNotifications += 1;
       continue;
@@ -303,6 +304,7 @@ function resolveWorkflowSteps_(configuredSteps, request) {
 function normalizeWorkflowStep_(step, request, index, originalIndex) {
   const type = normalizeWorkflowStepType_(step.type);
   const emails = resolveWorkflowStepEmails_(step, request);
+  const ccEmails = resolveWorkflowStepCcEmails_(step, request);
   const name = trim_(step.name) || defaultWorkflowStepName_(type);
 
   if (!emails.length) {
@@ -311,6 +313,9 @@ function normalizeWorkflowStep_(step, request, index, originalIndex) {
 
   emails.forEach(function (email) {
     validateEmail_(email, `${name} email`);
+  });
+  ccEmails.forEach(function (email) {
+    validateEmail_(email, `${name} CC email`);
   });
 
   if (isBlockingWorkflowStepType_(type) && emails.length !== 1) {
@@ -324,10 +329,12 @@ function normalizeWorkflowStep_(step, request, index, originalIndex) {
     name,
     email: emails[0],
     emails,
+    ccEmails,
     subject: trim_(step.subject),
     message: trim_(step.message),
     waitingLabel: isBlockingWorkflowStepType_(type) ? (trim_(step.waitingLabel) || defaultWorkflowWaitingLabel_()) : '',
-    followUpStage: trim_(step.followUpStage)
+    followUpStage: trim_(step.followUpStage),
+    requireComment: isBlockingWorkflowStepType_(type) && step && step.requireComment === true
   };
 }
 
@@ -350,10 +357,12 @@ function workflowStepSnapshot_(stage, step) {
     name: step.name,
     email: step.email,
     emails: [].concat(step.emails || []).map(normalizeEmail_).filter(Boolean),
+    ccEmails: [].concat(step.ccEmails || []).map(normalizeEmail_).filter(Boolean),
     subject: trim_(step.subject),
     message: trim_(step.message),
     waitingLabel: trim_(step.waitingLabel),
-    followUpStage: trim_(step.followUpStage)
+    followUpStage: trim_(step.followUpStage),
+    requireComment: Boolean(step.requireComment)
   };
 }
 
@@ -376,6 +385,9 @@ function normalizeStoredWorkflowStep_(stage, step, fallbackIndex) {
     .concat(step && step.email ? [step.email] : [])
     .map(normalizeEmail_)
     .filter(Boolean);
+  const ccEmails = [].concat((step && step.ccEmails) || [])
+    .map(normalizeEmail_)
+    .filter(Boolean);
   const seen = {};
   const uniqueEmails = emails.filter(function (email) {
     if (seen[email]) {
@@ -393,10 +405,12 @@ function normalizeStoredWorkflowStep_(stage, step, fallbackIndex) {
     name: trim_(step && step.name) || defaultWorkflowStepName_(type),
     email: uniqueEmails[0] || '',
     emails: uniqueEmails,
+    ccEmails: uniqueEmailList_(ccEmails),
     subject: trim_(step && step.subject),
     message: trim_(step && step.message),
     waitingLabel: isBlockingWorkflowStepType_(type) ? (trim_(step && step.waitingLabel) || defaultWorkflowWaitingLabel_()) : '',
-    followUpStage: trim_(step && step.followUpStage)
+    followUpStage: trim_(step && step.followUpStage),
+    requireComment: isBlockingWorkflowStepType_(type) && Boolean(step && step.requireComment)
   };
 }
 
@@ -543,6 +557,27 @@ function resolveWorkflowStepEmails_(step, request) {
     });
 }
 
+function resolveWorkflowStepCcEmails_(step, request) {
+  const emails = [];
+
+  if (step && step.ccEmail) {
+    emails.push(step.ccEmail);
+  }
+  if (step && step.ccEmailField && request[step.ccEmailField]) {
+    emails.push(request[step.ccEmailField]);
+  }
+  [].concat((step && step.ccEmails) || []).forEach(function (email) {
+    emails.push(email);
+  });
+  [].concat((step && step.ccEmailFields) || []).forEach(function (field) {
+    if (request[field]) {
+      emails.push(request[field]);
+    }
+  });
+
+  return uniqueEmailList_(emails);
+}
+
 function normalizeWorkflowStepType_(type) {
   const normalized = trim_(type || 'approval').toLowerCase();
   if (['approval', 'acknowledgement', 'action', 'notification'].indexOf(normalized) === -1) {
@@ -682,6 +717,16 @@ function validateWorkflowDecision_(step, decision, comment) {
       ? 'A reason is required when denying a request.'
       : 'A comment is required when requesting changes.');
   }
+  if (workflowStepRequiresComment_(step, decision) && !comment) {
+    throw new Error('Notes are required for this workflow step.');
+  }
+}
+
+function workflowStepRequiresComment_(step, decision) {
+  if (!step || step.requireComment !== true) {
+    return false;
+  }
+  return decision === workflowStepPrimaryDecision_(step);
 }
 
 function workflowHistoryDecision_(decision, step) {
@@ -713,7 +758,7 @@ function appendHistory_(request, field, entry) {
   request[field] = JSON.stringify(history);
 }
 
-function recordWorkflowNotificationHistory_(request, stage, step, recipients) {
+function recordWorkflowNotificationHistory_(request, stage, step, recipients, ccRecipients) {
   const historyField = stage === 'final' ? 'finalApprovalHistory' : 'approvalHistory';
   appendHistory_(request, historyField, {
     at: nowIso_(),
@@ -723,6 +768,7 @@ function recordWorkflowNotificationHistory_(request, stage, step, recipients) {
     stepType: 'notification',
     approverEmail: '',
     recipients: [].concat(recipients || []).map(normalizeEmail_).filter(Boolean),
+    ccRecipients: [].concat(ccRecipients || []).map(normalizeEmail_).filter(Boolean),
     decision: 'notification sent'
   });
 }

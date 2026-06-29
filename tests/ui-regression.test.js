@@ -150,6 +150,11 @@ test('admin dashboard exposes global-admin user access management', () => {
   assert.match(js, /function currentWorkflowRecipientFields\(processKey\)/);
   assert.doesNotMatch(js, /data-step-field="emailField" value="\$\{escapeHtml\(normalized\.emailField \|\| ''\)\}"/);
   assert.match(js, /data-workflow-waiting-panel/);
+  assert.match(js, /data-workflow-action-panel/);
+  assert.match(js, /data-step-field="requireComment"/);
+  assert.match(js, /Require notes before this step can be completed/);
+  assert.match(js, /data-workflow-notification-cc/);
+  assert.match(js, /data-step-field="ccEmails"/);
   assert.doesNotMatch(js, /data-workflow-waiting-panel \$\{isBlockingStep \? 'open' : 'hidden'\}/);
   assert.match(js, /data-step-field="waitingLabel"/);
   assert.match(js, /data-workflow-waiting-preview/);
@@ -500,6 +505,9 @@ test('overtime adjust-workday compensation captures workday times with zero over
   assert.ok((request.sections || []).some(section => section.title === '4. Planned Work Hours'));
   const compensation = formField('overtime', 'request', 'compensationMethod');
   const adjustOption = (compensation.options || []).find(option => option.value === compensationValue);
+  const toilOption = (compensation.options || []).find(option => option.value === 'Accumulate for later Time Off in Lieu (TOIL)');
+  assert.equal(toilOption.summary, 'Accumulate one hour TOIL for each overtime hour worked, to be taken within 4 weeks (where criteria is met) or paid out (where criteria is not met).');
+  assert.match(toilOption.detailHtml, /Finance will check and confirm eligibility for TOIL/);
   assert.deepEqual(adjustOption.visibleWhen, { field: 'normallyWorks', equals: 'Yes' });
   assert.equal(adjustOption.summaryVariant, 'adjustedWorkday');
   const plannedWarning = formFields('overtime', 'request').find(field => field.type === 'hoursWarning');
@@ -546,11 +554,14 @@ test('approval history renders adjustments with requester or approver, comments,
 });
 
 test('denial actions require a visible reason before notifying request parties', () => {
-  assert.match(js, /<span>Reason \/ comment<\/span>/);
+  assert.match(js, /function renderDecisionCommentField\(context\)/);
+  assert.match(js, /const label = requiresComment \? 'Notes' : 'Reason \/ comment'/);
   assert.match(js, /data-decision-comment/);
+  assert.match(js, /data-comment-required="true"/);
+  assert.match(js, /Enter notes before completing this step/);
   assert.match(js, /Required when denying or requesting changes/);
   assert.match(js, /function validateDecisionComment\(form, decision\)/);
-  assert.match(js, /decision !== 'deny' && decision !== 'changes'/);
+  assert.match(js, /requiresStepComment/);
   assert.match(js, /Enter a reason before denying this request/);
   assert.match(email, /Deny opens the review page so a reason can be entered/);
   assert.doesNotMatch(email, /workflowDecisionUrl_\(webAppUrl, token, 'deny'\)/);

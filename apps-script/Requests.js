@@ -59,6 +59,7 @@ function getInitialState_(params) {
         stepEmail: request.activeApprovalStepEmail,
         primaryDecision: workflowStepPrimaryDecision_(activeStep),
         primaryActionLabel: workflowStepPrimaryLabel_(activeStep),
+        requiresComment: workflowStepRequiresComment_(activeStep, workflowStepPrimaryDecision_(activeStep)),
         canDeny: workflowStepAllowsDecision_(activeStep, 'deny')
       }
     });
@@ -1332,6 +1333,7 @@ function publicRequest_(request) {
     activeWorkflowStageLabel: activeStep ? workflowStepStageLabel_(request.activeApprovalStage, activeStep, request) : '',
     activeWorkflowPrimaryDecision: activeStep ? workflowStepPrimaryDecision_(activeStep) : '',
     activeWorkflowPrimaryActionLabel: activeStep ? workflowStepPrimaryLabel_(activeStep) : '',
+    activeWorkflowRequiresComment: activeStep ? workflowStepRequiresComment_(activeStep, workflowStepPrimaryDecision_(activeStep)) : false,
     activeWorkflowCanDeny: activeStep ? workflowStepAllowsDecision_(activeStep, 'deny') : false,
     waitingOnType: waitingOnType_(request),
     waitingOnLabel: waitingOnLabel_(request),
@@ -1411,6 +1413,8 @@ function publicWorkflowSteps_(stage, request) {
           name: step.name,
           email: step.email,
           emails: step.emails,
+          ccEmails: step.ccEmails || [],
+          requireComment: Boolean(step.requireComment),
           stepKey: workflowStepKey_(step)
         };
       });
@@ -1439,6 +1443,7 @@ function dashboardRequest_(request, role, actorEmail, approverEventRequestIds, c
   record.canRequestChanges = record.canApprove && workflowStepAllowsDecision_(activeStep, 'changes');
   record.primaryDecision = activeStep ? workflowStepPrimaryDecision_(activeStep) : 'approve';
   record.primaryActionLabel = activeStep ? workflowStepPrimaryLabel_(activeStep) : 'Approve';
+  record.requiresComment = activeStep ? workflowStepRequiresComment_(activeStep, record.primaryDecision) : false;
   record.canAdmin = role === 'admin' && isProcessAdminEmail_(actorEmail, request.processType);
   record.canEditApproval = role === 'requester' && requesterCanAccess_(request, actorEmail) && canEditApprovalStatus_(request.status);
   record.canEditActual = getProcessCompletionMode_(request) === 'actual_hours' &&

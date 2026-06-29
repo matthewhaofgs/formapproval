@@ -784,6 +784,14 @@
           <summary>Step settings</summary>
           <div class="workflow-step-editor-body">
             ${renderWorkflowRecipientControls(normalized, type, recipientFields || [])}
+            <details class="workflow-optional-panel" data-workflow-action-panel ${isBlockingStep ? '' : 'hidden'}>
+              <summary>Action requirements</summary>
+              <label class="check-row">
+                <input type="checkbox" data-step-field="requireComment" value="true" ${normalized.requireComment ? 'checked' : ''}>
+                <span>Require notes before this step can be completed</span>
+              </label>
+              <p class="workflow-condition-note">Use this for verification or action steps where the response needs an audit note.</p>
+            </details>
             <details class="workflow-optional-panel" data-workflow-waiting-panel ${isBlockingStep ? '' : 'hidden'}>
               <summary>Dashboard text</summary>
               <div class="workflow-waiting-preview" data-workflow-waiting-preview>
@@ -827,6 +835,7 @@
   function renderWorkflowRecipientControls(step, type, recipientFields) {
     const normalized = step || {};
     const emails = Array.isArray(normalized.emails) ? normalized.emails.join('\n') : String(normalized.emails || '');
+    const ccEmails = Array.isArray(normalized.ccEmails) ? normalized.ccEmails.join('\n') : String(normalized.ccEmails || '');
     const emailFields = Array.isArray(normalized.emailFields) ? normalized.emailFields : splitWorkflowFieldList(normalized.emailFields || '');
     const mode = workflowRecipientMode(normalized, type);
     return `
@@ -863,6 +872,10 @@
             <select multiple size="${Math.min(Math.max((recipientFields || []).length, 3), 6)}" data-step-field="emailFields" data-recipient-field>
               ${workflowRecipientFieldOptions(recipientFields, emailFields)}
             </select>
+          </label>
+          <label class="field workflow-span-2" data-workflow-notification-cc ${normalizeWorkflowEditorStepType(type) === 'notification' ? '' : 'hidden'}>
+            <span>CC email addresses</span>
+            <textarea rows="2" data-step-field="ccEmails" placeholder="payroll@example.edu">${escapeHtml(ccEmails)}</textarea>
           </label>
         </div>
       </section>
@@ -970,6 +983,9 @@
     if (Array.isArray(step.emailFields) && step.emailFields.length) {
       recipients.push(`${step.emailFields.length} request fields`);
     }
+    if (Array.isArray(step.ccEmails) && step.ccEmails.length) {
+      recipients.push(`cc ${step.ccEmails.length}`);
+    }
     const parts = [`Recipients: ${recipients.length ? recipients.join(', ') : 'not set'}`];
     const subject = step.effectiveSubject || step.subject || step.defaultSubject || '';
     if (subject) {
@@ -977,6 +993,9 @@
     }
     if (isWorkflowEditorBlockingType(step.type) && step.waitingLabel) {
       parts.push('dashboard text set');
+    }
+    if (isWorkflowEditorBlockingType(step.type) && step.requireComment) {
+      parts.push('notes required');
     }
     if (step.whenJson) {
       parts.push('conditional');
@@ -1527,11 +1546,7 @@
       const primaryLabel = request.primaryActionLabel || request.activeWorkflowPrimaryActionLabel || 'Approve';
       return `
         <form class="dashboard-approval stack" data-request-id="${escapeHtml(request.requestId)}">
-          <label class="field full">
-            <span>Reason / comment</span>
-            <textarea name="comment" data-decision-comment></textarea>
-            <span class="help">Required when denying or requesting changes. This is included in request emails and history.</span>
-          </label>
+          ${renderDecisionCommentField(request)}
           <div class="actions inline">
             ${request.canDeny ? '<button class="button danger" type="button" data-dashboard-decision="deny">Deny</button>' : ''}
             ${request.canRequestChanges === false ? '' : '<button class="button secondary" type="button" data-dashboard-decision="changes">Request changes</button>'}
@@ -1563,6 +1578,22 @@
     }
 
     return '';
+  }
+
+  function renderDecisionCommentField(context) {
+    const requiresComment = Boolean(context && (context.requiresComment || context.activeWorkflowRequiresComment));
+    const label = requiresComment ? 'Notes' : 'Reason / comment';
+    const help = requiresComment
+      ? 'Required for this workflow step. These notes are included in workflow history for audit and payroll reference.'
+      : 'Required when denying or requesting changes. This is included in request emails and history.';
+    const message = requiresComment ? 'Enter notes before completing this step.' : '';
+    return `
+      <label class="field full">
+        <span>${escapeHtml(label)}</span>
+        <textarea name="comment" data-decision-comment ${requiresComment ? 'data-comment-required="true"' : ''} ${message ? `data-comment-required-message="${escapeHtml(message)}"` : ''}></textarea>
+        <span class="help">${escapeHtml(help)}</span>
+      </label>
+    `;
   }
 
   function renderAdminActions(request) {
@@ -2450,11 +2481,13 @@
       name: workflowStepFieldValue(step, 'name'),
       email: recipientMode === 'fixed-email' || recipientMode === 'advanced' ? workflowStepFieldValue(step, 'email') : '',
       emails: recipientMode === 'fixed-emails' || recipientMode === 'advanced' ? splitWorkflowList(workflowStepFieldValue(step, 'emails')) : [],
+      ccEmails: normalizeWorkflowEditorStepType(type) === 'notification' ? splitWorkflowList(workflowStepFieldValue(step, 'ccEmails')) : [],
       emailField: recipientMode === 'request-field' || recipientMode === 'advanced' ? workflowStepFieldValue(step, 'emailField') : '',
       emailFields: recipientMode === 'request-fields' || recipientMode === 'advanced' ? splitWorkflowFieldList(workflowStepFieldValue(step, 'emailFields')) : [],
       subject: workflowStepFieldValue(step, 'subject'),
       message: workflowStepFieldValue(step, 'message'),
       waitingLabel,
+      requireComment: isWorkflowEditorBlockingType(type) ? workflowStepFieldChecked(step, 'requireComment') : false,
       whenJson: conditionJsonFromBuilder(step, 'whenJson'),
       unlessJson: conditionJsonFromBuilder(step, 'unlessJson'),
       followUpStage: isWorkflowEditorBlockingType(type) ? workflowStepFieldValue(step, 'followUpStage') : ''
@@ -2499,6 +2532,14 @@
       const isBlocking = isWorkflowEditorBlockingType(type);
       waitingPanel.hidden = !isBlocking;
     }
+    const actionPanel = step.querySelector('[data-workflow-action-panel]');
+    if (actionPanel) {
+      actionPanel.hidden = !isWorkflowEditorBlockingType(type);
+    }
+    const notificationCc = step.querySelector('[data-workflow-notification-cc]');
+    if (notificationCc) {
+      notificationCc.hidden = normalizeWorkflowEditorStepType(type) !== 'notification';
+    }
   }
 
   function updateWorkflowWaitingPreview(step) {
@@ -2518,9 +2559,11 @@
       name: workflowStepFieldValue(step, 'name'),
       email: workflowStepFieldValue(step, 'email'),
       emails: splitWorkflowList(workflowStepFieldValue(step, 'emails')),
+      ccEmails: splitWorkflowList(workflowStepFieldValue(step, 'ccEmails')),
       emailField: workflowStepFieldValue(step, 'emailField'),
       emailFields: splitWorkflowFieldList(workflowStepFieldValue(step, 'emailFields')),
-      waitingLabel: workflowStepFieldValue(step, 'waitingLabel')
+      waitingLabel: workflowStepFieldValue(step, 'waitingLabel'),
+      requireComment: workflowStepFieldChecked(step, 'requireComment')
     };
   }
 
@@ -2643,6 +2686,11 @@
       return Array.from(input.selectedOptions).map(option => option.value).filter(Boolean).join(',');
     }
     return input ? String(input.value || '').trim() : '';
+  }
+
+  function workflowStepFieldChecked(step, field) {
+    const input = step ? step.querySelector(`[data-step-field="${field}"]`) : null;
+    return Boolean(input && input.checked);
   }
 
   function splitWorkflowList(value) {
@@ -2958,11 +3006,7 @@
         ${renderRequestSummary(request, includeActual)}
         ${renderHistory(request)}
         <form id="approval-form" class="stack">
-          <label class="field full">
-            <span>Reason / comment</span>
-            <textarea name="comment" data-decision-comment></textarea>
-            <span class="help">Required when denying or requesting changes. This is included in request emails and history.</span>
-          </label>
+          ${renderDecisionCommentField(approval)}
           <div class="actions">
             ${approval.canDeny ? '<button class="button danger" type="button" data-decision="deny">Deny</button>' : ''}
             <button class="button secondary" type="button" data-decision="changes">Request changes</button>
@@ -3453,16 +3497,20 @@
   }
 
   function validateDecisionComment(form, decision) {
-    if (decision !== 'deny' && decision !== 'changes') {
+    const field = form ? form.querySelector('[data-decision-comment]') : null;
+    const requiresStepComment = field && field.dataset.commentRequired === 'true';
+    if (decision !== 'deny' && decision !== 'changes' && !requiresStepComment) {
       return true;
     }
-    const field = form ? form.querySelector('[data-decision-comment]') : null;
     if (!field || normalize(field.value)) {
       return true;
     }
-    field.setCustomValidity(decision === 'deny'
+    const message = decision === 'deny'
       ? 'Enter a reason before denying this request.'
-      : 'Enter a comment before requesting changes.');
+      : (decision === 'changes'
+        ? 'Enter a comment before requesting changes.'
+        : (field.dataset.commentRequiredMessage || 'Enter notes before completing this step.'));
+    field.setCustomValidity(message);
     field.reportValidity();
     field.addEventListener('input', () => field.setCustomValidity(''), { once: true });
     return false;

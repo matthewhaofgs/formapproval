@@ -464,6 +464,7 @@ function adminWorkflowStepForEditor_(step, index, stage, process) {
     name: step.name || '',
     email: step.email || '',
     emails: cloneArray_(step.emails || []),
+    ccEmails: cloneArray_(step.ccEmails || []),
     emailField: step.emailField || '',
     emailFields: cloneArray_(step.emailFields || []),
     subject,
@@ -477,7 +478,8 @@ function adminWorkflowStepForEditor_(step, index, stage, process) {
     emailCopyMode: subject && message ? 'custom' : (subject || message ? 'partial' : 'default'),
     whenJson: step.when ? JSON.stringify(step.when, null, 2) : '',
     unlessJson: step.unless ? JSON.stringify(step.unless, null, 2) : '',
-    followUpStage: step.followUpStage || ''
+    followUpStage: step.followUpStage || '',
+    requireComment: Boolean(step.requireComment)
   };
 }
 
@@ -580,6 +582,7 @@ function normalizeAdminWorkflowStep_(step, stage, index, process) {
   const name = requireText_(step.name, `${label} name`);
   const email = trim_(step.email);
   const emails = normalizeOptionalWorkflowEmailList_(step.emails, `${label} notification emails`);
+  const ccEmails = normalizeOptionalWorkflowEmailList_(step.ccEmails, `${label} CC emails`);
   const emailField = normalizeWorkflowFieldName_(step.emailField, `${label} email field`, false);
   const emailFields = normalizeWorkflowFieldList_(step.emailFields, `${label} email fields`);
   const recipientCount = (email ? 1 : 0) + emails.length + (emailField ? 1 : 0) + emailFields.length;
@@ -603,6 +606,9 @@ function normalizeAdminWorkflowStep_(step, stage, index, process) {
   }
   if (emails.length) {
     normalized.emails = emails;
+  }
+  if (type === 'notification' && ccEmails.length) {
+    normalized.ccEmails = ccEmails;
   }
   if (emailField) {
     normalized.emailField = emailField;
@@ -639,8 +645,18 @@ function normalizeAdminWorkflowStep_(step, stage, index, process) {
   if (followUpStage) {
     normalized.followUpStage = normalizeWorkflowStageKey_(followUpStage);
   }
+  if (isBlockingWorkflowStepType_(type) && submittedBoolean_(step.requireComment)) {
+    normalized.requireComment = true;
+  }
 
   return normalized;
+}
+
+function submittedBoolean_(value) {
+  if (value === true) {
+    return true;
+  }
+  return ['true', 'yes', '1', 'on'].indexOf(trim_(value).toLowerCase()) !== -1;
 }
 
 function normalizeOptionalWorkflowEmailList_(value, label) {
