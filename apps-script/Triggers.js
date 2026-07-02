@@ -29,6 +29,9 @@ function sendDueActualHoursRequestsInternal_() {
     if (!request.followUpDueDate || request.followUpDueDate > today) {
       return;
     }
+    if (!formStageMatchesConditions_(request, 'actual')) {
+      return;
+    }
 
     const token = createToken_();
     request.employeeActionTokenHash = hashToken_(token);

@@ -1174,7 +1174,8 @@ function requestNeedsVtrChecklist_(request) {
   const definition = getFormDefinition_(request, 'checklist');
   return isVtrRequest_(request) &&
     Boolean(definition && definition.key) &&
-    !workflowConditionEquals_(request.eventType, 'Assessment');
+    !workflowConditionEquals_(request.eventType, 'Assessment') &&
+    formStageMatchesConditions_(request, 'checklist');
 }
 
 function normalizeVtrChecklistAction_(value) {

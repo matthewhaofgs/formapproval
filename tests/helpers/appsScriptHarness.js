@@ -68,6 +68,8 @@ const EXPORTED_NAMES = [
   'getFormDefinition_',
   'publicFormDefinition_',
   'getAllFormDefinitions_',
+  'getFormStages_',
+  'getFormStageMetadata_',
   'getFormAdjustmentFields_',
   'getEnabledRequestFormOptions_',
   'getAdminProcessOptionsFor_',

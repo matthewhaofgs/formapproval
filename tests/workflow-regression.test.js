@@ -872,6 +872,35 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
   assert.equal(request.status, harness.api.STATUS.APPROVED);
 });
 
+test('form stage metadata conditions can suppress a configured follow-up stage', () => {
+  const harness = createAppsScriptHarness({ now: '2026-07-11T00:30:00.000Z' });
+  harness.api.FORM_DEFINITIONS.vtr.stages = [
+    { key: 'request', label: 'Request', runtimeType: 'request', triggerMode: 'initial' },
+    {
+      key: 'checklist',
+      label: 'Checklist',
+      runtimeType: 'checklist',
+      triggerMode: 'workflow',
+      when: { field: 'costToStudents', equals: 'Yes' }
+    }
+  ];
+  harness.api.DEFAULT_PROCESS_DEFINITIONS.vtr.workflows.approval = [
+    { type: 'approval', name: 'Configured VTR Step', email: 'hod@example.edu' }
+  ];
+
+  harness.api.submitRequest(defaultVtrRequest({ costToStudents: 'No' }));
+  const token = latestWorkflowToken(harness, 'hod@example.edu');
+
+  harness.setActiveUser('hod@example.edu');
+  const result = harness.api.submitApprovalDecision({ token, decision: 'approve' });
+  const request = currentRequest(harness);
+
+  assert.equal(result.ok, true);
+  assert.equal(request.status, harness.api.STATUS.APPROVED);
+  assert.equal(request.employeeActionTokenHash, '');
+  assert.equal(harness.mail.some(mail => /complete VTR checklist/i.test(mail.subject || '')), false);
+});
+
 test('VTR workflow follows the updated initial approval, final approval, and risk acknowledgement branches', () => {
   const harness = createAppsScriptHarness();
 
@@ -2256,6 +2285,12 @@ test('global admins can manage process workflow steps from the admin dashboard',
   const overtime = management.workflowManagement.processes.find(process => process.key === 'overtime');
   assert.ok(overtime.stages.some(stage => stage.key === 'approval'));
   assert.ok(overtime.stages.some(stage => stage.key === 'final'));
+  assert.ok(overtime.formStages.some(stage => (
+    stage.key === 'actual' &&
+    stage.runtimeType === 'actual' &&
+    stage.triggerMode === 'scheduled' &&
+    stage.canBeFollowUp === false
+  )));
   assert.ok(overtime.conditionFields.some(field => field.name === 'normallyWorks'));
   const overtimeLineManager = overtime.stages
     .find(stage => stage.key === 'approval')
@@ -2273,6 +2308,12 @@ test('global admins can manage process workflow steps from the admin dashboard',
     ['employeeEmail', 'lineManagerEmail', 'requesterEmail']
   );
   const vtr = management.workflowManagement.processes.find(process => process.key === 'vtr');
+  assert.ok(vtr.formStages.some(stage => (
+    stage.key === 'checklist' &&
+    stage.runtimeType === 'checklist' &&
+    stage.triggerMode === 'workflow' &&
+    stage.canBeFollowUp === true
+  )));
   const vtrCustomStep = vtr.stages
     .flatMap(stage => stage.steps)
     .find(step => step.subject && step.message);
@@ -2295,6 +2336,38 @@ test('global admins can manage process workflow steps from the admin dashboard',
       }
     }),
     /waiting message is required/
+  );
+  assert.throws(
+    () => harness.api.updateAdminWorkflowSettings({
+      email: 'admin@example.edu',
+      processKey: 'overtime',
+      workflows: {
+        approval: [{
+          type: 'approval',
+          name: 'Bad follow-up',
+          email: 'badfollowup@example.edu',
+          waitingLabel: '{Step name} <{Step email}> to {Action}',
+          followUpStage: 'missing_stage'
+        }]
+      }
+    }),
+    /follow-up stage "missing_stage" is not configured/
+  );
+  assert.throws(
+    () => harness.api.updateAdminWorkflowSettings({
+      email: 'admin@example.edu',
+      processKey: 'overtime',
+      workflows: {
+        approval: [{
+          type: 'approval',
+          name: 'Scheduled follow-up',
+          email: 'scheduledfollowup@example.edu',
+          waitingLabel: '{Step name} <{Step email}> to {Action}',
+          followUpStage: 'actual'
+        }]
+      }
+    }),
+    /follow-up stage "actual" is not a workflow-triggerable form stage/
   );
 
   const result = harness.api.updateAdminWorkflowSettings({
@@ -2392,8 +2465,9 @@ test('global admins can create and edit database-backed form definitions from th
   assert.ok(management.formManagement.fieldTypes.some(fieldType => fieldType.value === 'checklistChoice'));
   assert.deepEqual(
     plain(management.formManagement.stageTypes.map(stage => stage.key)),
-    ['request', 'actual', 'checklist']
+    ['request', 'actual', 'checklist', 'generic']
   );
+  assert.ok(management.formManagement.stageTypes.some(stage => stage.key === 'generic' && /future/i.test(stage.description || '')));
   assert.ok(management.formManagement.forms.some(form => form.key === 'vtr'));
   assert.ok(
     management.formManagement.forms
@@ -2407,6 +2481,28 @@ test('global admins can create and edit database-backed form definitions from th
     definition: {
       name: 'Test Form Builder',
       description: 'Created through the admin form builder',
+      stages: [
+        {
+          key: 'request',
+          label: 'Request',
+          runtimeType: 'request',
+          triggerMode: 'initial'
+        },
+        {
+          key: 'risk_review',
+          label: 'Risk review',
+          runtimeType: 'generic',
+          triggerMode: 'workflow',
+          when: { field: 'category', equals: 'B' }
+        },
+        {
+          key: 'checklist',
+          label: 'Completion checklist',
+          runtimeType: 'checklist',
+          triggerMode: 'workflow',
+          unless: { field: 'category', equals: 'A' }
+        }
+      ],
       forms: {
         request: {
           key: 'test_form_builder',
@@ -2441,6 +2537,11 @@ test('global admins can create and edit database-backed form definitions from th
             }
           ]
         },
+        risk_review: {
+          key: 'test_form_builder.risk_review',
+          title: 'Risk review',
+          sections: []
+        },
         checklist: {
           key: 'test_form_builder.checklist',
           title: 'Completion checklist',
@@ -2469,6 +2570,24 @@ test('global admins can create and edit database-backed form definitions from th
 
   const definition = harness.api.FORM_DEFINITIONS.test_form_builder;
   assert.equal(definition.name, 'Test Form Builder');
+  assert.deepEqual(
+    plain(definition.stages.map(stage => stage.key)),
+    ['request', 'risk_review', 'checklist']
+  );
+  assert.deepEqual(
+    plain(definition.stages.find(stage => stage.key === 'risk_review')),
+    {
+      key: 'risk_review',
+      label: 'Risk review',
+      runtimeType: 'generic',
+      triggerMode: 'workflow',
+      when: { field: 'category', equals: 'B' }
+    }
+  );
+  assert.deepEqual(
+    plain(harness.api.getFormStages_({ key: 'test_form_builder_process', requestForm: 'test_form_builder' }).map(stage => stage.key)),
+    ['request', 'risk_review', 'checklist']
+  );
   assert.equal(definition.forms.request.sections[0].fields[0].type, 'content');
   assert.equal(Object.prototype.hasOwnProperty.call(definition.forms.request.sections[0].fields[0], 'name'), false);
   assert.equal(definition.forms.request.sections[0].fields[1].required, true);
@@ -2481,6 +2600,7 @@ test('global admins can create and edit database-backed form definitions from th
     { field: 'employeeName', exists: true }
   );
   assert.deepEqual(plain(definition.forms.request.adjustmentFields), ['employeeName', 'category']);
+  assert.equal(definition.forms.risk_review.key, 'test_form_builder.risk_review');
   assert.equal(definition.forms.checklist.sections[0].fields[0].type, 'checklistChoice');
 
   assert.throws(

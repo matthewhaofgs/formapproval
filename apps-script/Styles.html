@@ -2125,9 +2125,126 @@
 
   .form-builder-editor-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(320px, .58fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
     align-items: start;
+  }
+
+  .form-builder-workspace {
+    display: grid;
+    grid-template-columns: minmax(240px, .28fr) minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+
+  .form-builder-stage-rail {
+    position: sticky;
+    top: 12px;
+    display: grid;
+    gap: 12px;
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--navy-2);
+    border-radius: 8px;
+    background: #fffdf8;
+    padding: 12px;
+  }
+
+  .form-builder-stage-rail-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: start;
+  }
+
+  .form-builder-stage-rail-heading h5 {
+    margin: 0;
+    color: var(--navy);
+    font-size: 14px;
+  }
+
+  .form-builder-stage-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .form-builder-stage-main {
+    display: grid;
+    gap: 12px;
+  }
+
+  .form-builder-stage-nav-item {
+    display: grid;
+    gap: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 8px;
+  }
+
+  .form-builder-stage-nav-item.active {
+    border-color: var(--navy-2);
+    box-shadow: inset 4px 0 0 var(--navy-2), 0 8px 18px rgba(2, 29, 73, .08);
+  }
+
+  .form-builder-stage-tab {
+    appearance: none;
+    display: grid;
+    gap: 4px;
+    width: 100%;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    padding: 6px 8px 6px 10px;
+    text-align: left;
+  }
+
+  .form-builder-stage-tab:hover,
+  .form-builder-stage-tab:focus-visible {
+    background: var(--cream-soft);
+    outline: none;
+  }
+
+  .form-builder-stage-tab-label {
+    color: var(--navy);
+    font-weight: 800;
+    line-height: 1.25;
+  }
+
+  .form-builder-stage-nav-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    padding: 0 8px 2px;
+  }
+
+  .form-builder-stage-nav-actions .button {
+    min-height: 32px;
+  }
+
+  .form-builder-stage-nav-actions .form-builder-remove-button {
+    grid-column: 1 / -1;
+  }
+
+  .form-builder-add-stage-panel {
+    background: var(--surface);
+  }
+
+  .form-builder-add-stage-grid {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .form-builder-add-stage-grid .button {
+    width: 100%;
+  }
+
+  .form-builder-save-row {
+    border-top: 1px solid var(--line);
+    margin-top: 2px;
+    padding-top: 12px;
   }
 
   .admin-builder-toolbar,
@@ -2193,13 +2310,6 @@
     display: block;
     font-size: .88rem;
     margin-top: 3px;
-  }
-
-  .form-builder-stage-actions {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 12px;
-    align-items: start;
   }
 
   .form-builder-section,
@@ -2285,8 +2395,7 @@
   }
 
   .form-builder-preview {
-    position: sticky;
-    top: 12px;
+    position: static;
   }
 
   .form-builder-preview-heading {
@@ -2616,6 +2725,7 @@
     .workflow-condition-row,
     .form-builder-index,
     .form-builder-editor-layout,
+    .form-builder-workspace,
     .form-builder-stage-heading,
     .form-builder-section-header,
     .form-builder-question-row,
@@ -2626,7 +2736,6 @@
     .form-builder-section-settings,
     .form-builder-field-grid,
     .form-builder-create-grid,
-    .form-builder-stage-actions,
     .request-item summary,
     .request-item summary.admin-summary,
     .admin-action-grid,
@@ -2641,6 +2750,10 @@
     }
 
     .form-builder-preview {
+      position: static;
+    }
+
+    .form-builder-stage-rail {
       position: static;
     }
 

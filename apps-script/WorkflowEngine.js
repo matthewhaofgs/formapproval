@@ -451,6 +451,12 @@ function workflowStepMatchesConditions_(step, request) {
     !workflowConditionsMatch_(step.unless, request, false);
 }
 
+function formStageMatchesConditions_(request, formStage) {
+  const stage = getFormStageMetadata_(request, formStage);
+  return workflowConditionsMatch_(stage.when, request, true) &&
+    !workflowConditionsMatch_(stage.unless, request, false);
+}
+
 function workflowConditionsMatch_(conditions, request, defaultValue) {
   if (conditions === undefined || conditions === null || conditions === '') {
     return defaultValue === undefined ? true : defaultValue;

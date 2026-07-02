@@ -653,6 +653,7 @@
   function renderFormBuilderEditor(form, fieldTypes, stageTypes) {
     const definition = form.definition || { forms: {} };
     const stages = formBuilderStages(definition, form.key, stageTypes);
+    const conditionFields = formBuilderConditionFields(stages);
     const activeStage = formBuilderActiveStage(stages);
     const usage = (form.processUsage || []).map(process => process.name || process.key).join(', ');
     return `
@@ -682,28 +683,25 @@
                 <input type="text" data-definition-field="description" value="${escapeHtml(definition.description || form.description || '')}">
               </label>
             </div>
-            ${renderFormBuilderStageTabs(stages, activeStage)}
-            <div class="form-builder-stage-panels">
-              ${stages.map(stage => renderFormBuilderStagePanel(stage, activeStage, fieldTypes)).join('')}
-            </div>
-            <div class="form-builder-stage-actions">
-              <details class="workflow-optional-panel">
-                <summary>${formBuilderSummary('Add stage', 'Stages are separate screens for the same form workflow. Only supported runtime stages can be added here.')}</summary>
-                <div class="form-builder-create-grid">
-                  <label class="field">
-                    ${formBuilderLabel('Stage type', 'Choose the kind of form screen to add. Request is the initial form; actual hours and checklist are follow-up screens used by supported processes.')}
-                    <select data-new-form-stage-key>
-                      ${formBuilderAvailableStageOptions(stages, stageTypes)}
-                    </select>
-                  </label>
-                  <label class="field">
-                    ${formBuilderLabel('Stage title', 'Optional heading shown at the top of this stage. Leave blank to use the default stage label.')}
-                    <input type="text" data-new-form-stage-title placeholder="Checklist">
-                  </label>
-                  <button class="button secondary" type="button" data-add-form-stage title="Add the selected supported stage to this form definition.">+ Add stage</button>
+            <div class="form-builder-workspace">
+              <aside class="form-builder-stage-rail" aria-label="Form stages">
+                <div class="form-builder-stage-rail-heading">
+                  <div>
+                    <h5>Stages</h5>
+                    <span class="request-meta">${escapeHtml(String(stages.length))} screens</span>
+                  </div>
                 </div>
-              </details>
-              <button class="button primary" type="submit" title="Save this form definition to the database.">Save form definition</button>
+                ${renderFormBuilderStageTabs(stages, activeStage, stageTypes)}
+                ${renderFormBuilderAddStagePanel(stageTypes)}
+              </aside>
+              <div class="form-builder-stage-main">
+                <div class="form-builder-stage-panels">
+                  ${stages.map(stage => renderFormBuilderStagePanel(stage, activeStage, fieldTypes, stageTypes, conditionFields)).join('')}
+                </div>
+                <div class="actions inline form-builder-save-row">
+                  <button class="button primary" type="submit" title="Save this form definition to the database.">Save form definition</button>
+                </div>
+              </div>
             </div>
           </form>
           ${renderFormBuilderPreview(definition, activeStage, stageTypes)}
@@ -714,116 +712,289 @@
 
   function formBuilderStages(definition, definitionKey, stageTypes) {
     const forms = definition.forms || {};
-    const stageKeys = Object.keys(forms);
+    const configuredStages = Array.isArray(definition.stages) ? definition.stages : [];
+    const stageMap = {};
+    const stageKeys = [];
+    configuredStages.forEach(stage => {
+      const key = normalize(stage && stage.key).replace(/\s+/g, '_');
+      if (!key || stageMap[key]) {
+        return;
+      }
+      stageMap[key] = stage;
+      stageKeys.push(key);
+    });
+    Object.keys(forms).forEach(stageKey => {
+      if (stageKeys.indexOf(stageKey) === -1) {
+        stageKeys.push(stageKey);
+      }
+    });
     if (stageKeys.indexOf('request') === -1) {
       stageKeys.unshift('request');
     }
-    const order = formBuilderStageTypes(stageTypes).reduce((map, item, index) => {
-      map[item.key] = index + 1;
-      return map;
-    }, {});
-    stageKeys.sort((a, b) => {
-      const aOrder = order[a] || 100;
-      const bOrder = order[b] || 100;
-      if (aOrder !== bOrder) {
-        return aOrder - bOrder;
-      }
-      return String(a).localeCompare(String(b));
-    });
-    return stageKeys.map(stageKey => ({
-      key: stageKey,
-      label: formBuilderStageLabel(stageKey, stageTypes),
-      triggerSummary: formBuilderStageTriggerSummary(stageKey, stageTypes),
-      definition: forms[stageKey] || {
-        key: stageKey === 'request' ? definitionKey : `${definitionKey}.${stageKey}`,
-        sections: []
-      }
-    }));
+    return ['request'].concat(stageKeys.filter(stageKey => stageKey !== 'request'))
+      .filter((stageKey, index, all) => all.indexOf(stageKey) === index)
+      .map(stageKey => {
+        const stageDefinition = forms[stageKey] || {
+          key: stageKey === 'request' ? definitionKey : `${definitionKey}.${stageKey}`,
+          sections: []
+        };
+        const stageMeta = stageMap[stageKey] || {};
+        const runtimeType = stageMeta.runtimeType || formBuilderDefaultStageRuntime(stageKey);
+        const triggerMode = stageMeta.triggerMode || formBuilderDefaultStageTriggerMode(runtimeType, stageTypes);
+        const label = stageMeta.label || stageDefinition.title || formBuilderStageRuntimeLabel(runtimeType, stageTypes) || stageKey;
+        return {
+          key: stageKey,
+          label,
+          runtimeType,
+          triggerMode,
+          description: stageMeta.description || '',
+          triggerSummary: stageMeta.triggerSummary || formBuilderStageTriggerSummary(runtimeType, triggerMode, stageMeta, stageTypes),
+          required: stageKey === 'request' || Boolean(stageMeta.required),
+          when: stageMeta.when || null,
+          unless: stageMeta.unless || null,
+          definition: stageDefinition
+        };
+      });
   }
 
   function formBuilderStageTypes(stageTypes) {
     return stageTypes && stageTypes.length
       ? stageTypes
       : [
-        { key: 'request', label: 'Request form', required: true, triggerSummary: 'Available when a requester starts a new request.' },
-        { key: 'actual', label: 'Actual hours', required: false, triggerSummary: 'Available when an actual-hours process asks for final hours.' },
-        { key: 'checklist', label: 'Checklist', required: false, triggerSummary: 'Available when a process starts a checklist follow-up.' }
+        { key: 'request', label: 'Initial request', description: 'The first form a requester completes.', required: true, defaultTriggerMode: 'initial', triggerSummary: 'Available when a requester starts a new request.' },
+        { key: 'actual', label: 'Actual-hours confirmation', description: 'Uses the existing actual-hours flow.', required: false, defaultTriggerMode: 'scheduled', triggerSummary: 'Available when an actual-hours process asks for final hours.' },
+        { key: 'checklist', label: 'Checklist follow-up', description: 'Uses the existing checklist flow.', required: false, defaultTriggerMode: 'workflow', triggerSummary: 'Available when a process starts a checklist follow-up.' },
+        { key: 'generic', label: 'Generic follow-up', description: 'Stores a configurable stage for future or process-specific runtime integrations.', required: false, defaultTriggerMode: 'workflow', triggerSummary: 'Configured in the database.' }
       ];
   }
 
-  function formBuilderStageType(stageKey, stageTypes) {
-    return formBuilderStageTypes(stageTypes).find(item => item.key === stageKey) || null;
+  function formBuilderStageType(runtimeType, stageTypes) {
+    return formBuilderStageTypes(stageTypes).find(item => item.key === runtimeType) || null;
   }
 
-  function formBuilderStageLabel(stageKey, stageTypes) {
-    const stageType = formBuilderStageType(stageKey, stageTypes);
-    return stageType ? stageType.label || stageType.key : stageKey;
+  function formBuilderDefaultStageRuntime(stageKey) {
+    return ['request', 'actual', 'checklist'].indexOf(stageKey) !== -1 ? stageKey : 'generic';
   }
 
-  function formBuilderStageTriggerSummary(stageKey, stageTypes) {
-    const stageType = formBuilderStageType(stageKey, stageTypes);
-    return stageType ? stageType.triggerSummary || '' : '';
+  function formBuilderDefaultStageTriggerMode(runtimeType, stageTypes) {
+    const stageType = formBuilderStageType(runtimeType, stageTypes);
+    return stageType ? stageType.defaultTriggerMode || 'workflow' : 'workflow';
   }
 
-  function formBuilderAvailableStageOptions(stages, stageTypes) {
-    const existing = (stages || []).reduce((map, stage) => {
-      map[stage.key] = true;
-      return map;
-    }, {});
-    const available = formBuilderStageTypes(stageTypes)
-      .filter(stage => !existing[stage.key]);
-    if (!available.length) {
-      return '<option value="">All supported stages are already present</option>';
+  function formBuilderStageRuntimeLabel(runtimeType, stageTypes) {
+    const stageType = formBuilderStageType(runtimeType, stageTypes);
+    return stageType ? stageType.label || stageType.key : runtimeType;
+  }
+
+  function formBuilderStageTriggerSummary(runtimeType, triggerMode, stageMeta, stageTypes) {
+    const stageType = formBuilderStageType(runtimeType, stageTypes);
+    const parts = [];
+    if (stageType && stageType.triggerSummary) {
+      parts.push(stageType.triggerSummary);
+    } else {
+      parts.push(formBuilderStageTriggerModeLabel(triggerMode));
     }
-    return available
-      .map(stage => `<option value="${escapeHtml(stage.key)}" title="${escapeHtml(stage.triggerSummary || '')}">${escapeHtml(stage.label || stage.key)}</option>`)
-      .join('');
+    if (stageMeta && (stageMeta.when || stageMeta.unless)) {
+      parts.push('Conditions configured.');
+    }
+    return parts.join(' ');
+  }
+
+  function formBuilderStageRuntimeOptions(stageTypes, selected) {
+    return formBuilderStageTypes(stageTypes).map(item => {
+      const key = item.key || '';
+      return `<option value="${escapeHtml(key)}" title="${escapeHtml(item.description || item.triggerSummary || item.label || key)}" ${key === selected ? 'selected' : ''}>${escapeHtml(item.label || key)}</option>`;
+    }).join('');
+  }
+
+  function formBuilderStageTriggerModeOptions(selected) {
+    return formBuilderStageTriggerModes().map(item => {
+      return `<option value="${escapeHtml(item.key)}" title="${escapeHtml(item.description)}" ${item.key === selected ? 'selected' : ''}>${escapeHtml(item.label)}</option>`;
+    }).join('');
+  }
+
+  function formBuilderStageTriggerModes() {
+    return [
+      { key: 'initial', label: 'Initial request', description: 'Starts when the user creates a new request.' },
+      { key: 'workflow', label: 'Workflow follow-up', description: 'Starts from a workflow step or after an approval path completes.' },
+      { key: 'scheduled', label: 'Scheduled follow-up', description: 'Starts from a server-side reminder or due-date job.' },
+      { key: 'manual', label: 'Manual or future', description: 'Stored for manual handling or a future runtime integration.' }
+    ];
+  }
+
+  function formBuilderStageTriggerModeLabel(mode) {
+    const item = formBuilderStageTriggerModes().find(candidate => candidate.key === mode);
+    return item ? item.label : mode;
+  }
+
+  function formBuilderStageMetaSummary(stage, sectionCount, questionCount, stageTypes) {
+    const parts = [];
+    const runtimeLabel = formBuilderStageRuntimeLabel(stage.runtimeType, stageTypes);
+    const triggerLabel = formBuilderStageTriggerModeLabel(stage.triggerMode);
+    if (runtimeLabel) {
+      parts.push(runtimeLabel);
+    }
+    if (triggerLabel && triggerLabel.toLowerCase() !== String(runtimeLabel || '').toLowerCase()) {
+      parts.push(triggerLabel);
+    }
+    parts.push(`${sectionCount} sections`);
+    parts.push(`${questionCount} questions`);
+    return parts.join(' - ');
+  }
+
+  function formBuilderConditionFields(stages) {
+    const fields = [
+      { name: 'processType', label: 'Process type', options: [] },
+      { name: 'requestId', label: 'Request ID', options: [] },
+      { name: 'employeeEmail', label: 'Employee email', options: [] },
+      { name: 'requesterEmail', label: 'Requester email', options: [] },
+      { name: 'lineManagerEmail', label: 'Line manager email', options: [] }
+    ];
+    (stages || []).forEach(stage => {
+      const group = stage.label || stage.key || '';
+      ((stage.definition || {}).sections || []).forEach(section => {
+        (section.fields || []).forEach(field => {
+          if (!field || !field.name || fields.some(candidate => candidate.name === field.name)) {
+            return;
+          }
+          fields.push({
+            name: field.name,
+            label: field.validationLabel || field.label || field.name,
+            group,
+            options: formBuilderConditionOptions(field.options)
+          });
+        });
+      });
+    });
+    return fields;
+  }
+
+  function formBuilderConditionOptions(options) {
+    if (!Array.isArray(options)) {
+      return [];
+    }
+    return options.map(option => {
+      if (option && typeof option === 'object') {
+        return option.value || option.label || option.name || '';
+      }
+      return String(option || '');
+    }).filter(Boolean);
   }
 
   function formBuilderActiveStage(stages) {
     return (stages.find(stage => stage.key === dashboardState.formBuilderStage) || stages[0] || { key: 'request' }).key;
   }
 
-  function renderFormBuilderStageTabs(stages, activeStage) {
+  function renderFormBuilderStageTabs(stages, activeStage, stageTypes) {
     return `
-      <div class="workflow-stage-tabs" role="tablist" aria-label="Form stages">
-        ${stages.map(stage => `
-          <button class="button secondary ${stage.key === activeStage ? 'active' : ''}" type="button" role="tab" data-form-stage-tab="${escapeHtml(stage.key)}" ${stage.key === activeStage ? 'aria-selected="true"' : 'aria-selected="false"'}>
-            ${escapeHtml(stage.label)}
-          </button>
-        `).join('')}
+      <div class="form-builder-stage-list" role="tablist" aria-label="Form stages">
+        ${stages.map(stage => renderFormBuilderStageNavItem(stage, activeStage, stageTypes)).join('')}
       </div>
     `;
   }
 
-  function renderFormBuilderStagePanel(stage, activeStage, fieldTypes) {
+  function renderFormBuilderStageNavItem(stage, activeStage, stageTypes) {
+    const definition = stage.definition || {};
+    const sections = definition.sections || [];
+    const questionCount = sections.reduce((total, section) => total + ((section.fields || []).length), 0);
+    const active = stage.key === activeStage;
+    return `
+      <div class="form-builder-stage-nav-item ${active ? 'active' : ''}" data-form-stage-nav-item="${escapeHtml(stage.key)}">
+        <button class="form-builder-stage-tab" type="button" role="tab" data-form-stage-tab="${escapeHtml(stage.key)}" ${active ? 'aria-selected="true"' : 'aria-selected="false"'}>
+          <span class="form-builder-stage-tab-label">${escapeHtml(stage.label || definition.title || stage.key)}</span>
+          <span class="request-meta">${escapeHtml(stage.key)}</span>
+          <span class="request-meta">${escapeHtml(formBuilderStageMetaSummary(stage, sections.length, questionCount, stageTypes))}</span>
+        </button>
+        ${stage.key === 'request' ? '' : `
+          <div class="form-builder-stage-nav-actions" aria-label="Manage ${escapeHtml(stage.label || stage.key)} stage">
+            <button class="button secondary form-builder-icon-button" type="button" data-move-form-stage="up" title="Move stage up" aria-label="Move stage up">&uarr;</button>
+            <button class="button secondary form-builder-icon-button" type="button" data-move-form-stage="down" title="Move stage down" aria-label="Move stage down">&darr;</button>
+            <button class="button danger form-builder-remove-button" type="button" data-remove-form-stage title="Remove this stage from the form definition. Existing submitted data is not deleted, but future users will not see this stage.">Remove</button>
+          </div>
+        `}
+      </div>
+    `;
+  }
+
+  function renderFormBuilderAddStagePanel(stageTypes) {
+    return `
+      <details class="workflow-optional-panel form-builder-add-stage-panel">
+        <summary>${formBuilderSummary('Add stage', 'Stages are separate screens for the same form workflow. Each stage has a stable key, a runtime behavior, and optional trigger conditions.')}</summary>
+        <div class="form-builder-add-stage-grid">
+          <label class="field">
+            ${formBuilderLabel('Stage key', 'Permanent internal key for this stage. Use lowercase letters, numbers, underscores, or hyphens. Workflow steps and saved requests can reference this key.')}
+            <input type="text" data-new-form-stage-key placeholder="e.g. risk_review" autocomplete="off">
+          </label>
+          <label class="field">
+            ${formBuilderLabel('Stage label', 'Short admin-facing label used for the stage tab. The public page heading can be different and is edited inside the stage settings.')}
+            <input type="text" data-new-form-stage-title placeholder="Risk review">
+          </label>
+          <label class="field">
+            ${formBuilderLabel('Runtime behavior', 'Code-owned behavior for this stage. This controls which server route, token flow, and validation path can run it. Generic stages are stored for future or process-specific integrations.')}
+            <select data-new-form-stage-runtime>
+              ${formBuilderStageRuntimeOptions(stageTypes, 'generic')}
+            </select>
+          </label>
+          <label class="field">
+            ${formBuilderLabel('Starts from', 'How this stage is expected to begin. This is saved with the form so workflow configuration can reference it consistently.')}
+            <select data-new-form-stage-trigger>
+              ${formBuilderStageTriggerModeOptions('workflow')}
+            </select>
+          </label>
+          <button class="button secondary" type="button" data-add-form-stage title="Add this stage to the form definition.">+ Add stage</button>
+        </div>
+      </details>
+    `;
+  }
+
+  function renderFormBuilderStagePanel(stage, activeStage, fieldTypes, stageTypes, conditionFields) {
     const definition = stage.definition || {};
     const sections = definition.sections || [];
     const questionCount = sections.reduce((total, section) => total + ((section.fields || []).length), 0);
     return `
       <section class="form-builder-stage" data-form-stage-panel data-form-stage="${escapeHtml(stage.key)}" ${stage.key === activeStage ? '' : 'hidden'}>
+        <input type="hidden" data-stage-meta-field="key" value="${escapeHtml(stage.key)}">
         <input type="hidden" data-stage-field="key" value="${escapeHtml(definition.key || '')}">
         <div class="form-builder-stage-heading">
           <div>
             <span class="request-meta">Stage</span>
-            <h4>${escapeHtml(definition.title || stage.label)}</h4>
-            <span class="request-meta">${escapeHtml(String(sections.length))} sections - ${escapeHtml(String(questionCount))} questions</span>
+            <h4>${escapeHtml(stage.label || definition.title || stage.key)}</h4>
+            <span class="request-meta">${escapeHtml(formBuilderStageMetaSummary(stage, sections.length, questionCount, stageTypes))}</span>
             ${stage.triggerSummary ? `<span class="form-builder-stage-trigger">${escapeHtml(stage.triggerSummary)}</span>` : ''}
           </div>
           <div class="form-builder-stage-heading-actions">
             <button class="button primary" type="button" data-add-form-section title="Add a new section to this stage.">+ Add section</button>
-            ${stage.key === 'request' ? '' : '<button class="button danger" type="button" data-remove-form-stage title="Remove this stage from the form definition. Existing submitted data is not deleted, but future users will not see this stage.">Remove stage</button>'}
           </div>
         </div>
         <details class="workflow-optional-panel form-builder-stage-config">
-          <summary>${formBuilderSummary('Stage settings', 'Controls the heading, explanatory text, submit button wording, and audit fields for this stage.')}</summary>
+          <summary>${formBuilderSummary('Stage settings', 'Controls the stage identity, runtime behavior, public heading, submit button wording, and audit fields for this stage.')}</summary>
           <div class="form-builder-stage-settings">
             <label class="field">
-              ${formBuilderLabel('Stage key', 'The internal stage identifier. This maps to runtime behavior and cannot be changed here.')}
+              ${formBuilderLabel('Stage key', 'Read-only once created. Workflow steps and saved requests can reference this key, so changing it would break links to existing data.')}
               <input type="text" value="${escapeHtml(stage.key)}" readonly>
             </label>
             <label class="field">
-              ${formBuilderLabel('Stage title', 'Heading shown at the top of this stage in the user-facing form.')}
+              ${formBuilderLabel('Stage label', 'Short admin-facing label used for the stage tab and workflow references.')}
+              <input type="text" data-stage-meta-field="label" value="${escapeHtml(stage.label || '')}">
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Runtime behavior', 'Code-owned behavior for this stage. This determines which server route, token flow, validation path, and status transitions can run the stage.')}
+              <select data-stage-meta-field="runtimeType">
+                ${formBuilderStageRuntimeOptions(stageTypes, stage.runtimeType || 'generic')}
+              </select>
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Starts from', 'How this stage is expected to start. Workflow follow-up stages can be referenced by approval flow steps; scheduled stages depend on server jobs.')}
+              <select data-stage-meta-field="triggerMode">
+                ${formBuilderStageTriggerModeOptions(stage.triggerMode || 'workflow')}
+              </select>
+            </label>
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Stage description', 'Admin-facing note about when this stage is used. This helps future admins understand why the stage exists.')}
+              <input type="text" data-stage-meta-field="description" value="${escapeHtml(stage.description || '')}">
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Page heading', 'Heading shown at the top of this stage in the user-facing form.')}
               <input type="text" data-stage-field="title" value="${escapeHtml(definition.title || '')}">
             </label>
             <label class="field workflow-span-2">
@@ -847,6 +1018,13 @@
               <input type="text" data-stage-field="adjustmentFields" value="${escapeHtml((definition.adjustmentFields || []).join(', '))}" placeholder="fieldOne, fieldTwo">
             </label>
           </div>
+          <details class="workflow-optional-panel workflow-span-2">
+            <summary>${formBuilderSummary('Stage trigger conditions', 'Optional JSON conditions that describe when this stage should start or be skipped. These use the same field/equals/in/all/any condition format as approval flows.')}</summary>
+            <div class="workflow-step-grid">
+              ${renderConditionBuilder('stageWhen', 'Start when', formBuilderConditionText(stage.when), conditionFields || [], 'No start condition. This stage applies whenever its trigger starts it.')}
+              ${renderConditionBuilder('stageUnless', 'Skip when', formBuilderConditionText(stage.unless), conditionFields || [], 'No skip condition. This stage is not skipped by field values.')}
+            </div>
+          </details>
           <details class="workflow-optional-panel workflow-span-2">
             <summary>${formBuilderSummary('Advanced stage schema', 'Raw JSON for stage properties that are not yet represented by the visual editor. Use this only when a developer has confirmed the property name and format.')}</summary>
             <div class="workflow-step-grid">
@@ -1068,7 +1246,7 @@
     const stages = formBuilderStages(definition || {}, '', stageTypes);
     const stage = stages.find(item => item.key === activeStage) || stages[0] || { key: 'request', definition: { sections: [] } };
     const stageDefinition = stage.definition || {};
-    const title = stageDefinition.title || definition.name || formBuilderStageLabel(stage.key, stageTypes);
+    const title = stageDefinition.title || definition.name || stage.label || stage.key;
     return `
       <aside class="form-builder-preview" data-form-builder-preview>
         <div class="form-builder-preview-heading">
@@ -1191,6 +1369,10 @@
       return options.join('\n');
     }
     return JSON.stringify(options, null, 2);
+  }
+
+  function formBuilderConditionText(condition) {
+    return condition ? JSON.stringify(condition, null, 2) : '';
   }
 
   function formBuilderExtraJson(field) {
@@ -1363,6 +1545,7 @@
       : [{ key: 'approval', label: 'Approval', steps: [] }];
     const conditionFields = process.conditionFields || [];
     const recipientFields = process.recipientFields || [];
+    const formStages = process.formStages || [];
     let activeStage = dashboardState.workflowStage;
     if (!stages.some(stage => stage.key === activeStage)) {
       activeStage = stages[0].key;
@@ -1392,7 +1575,7 @@
           </div>
           ${renderWorkflowStageTabs(stages, activeStage)}
           <div class="workflow-stage-panels">
-            ${stages.map(stage => renderWorkflowStagePanel(stage, activeStage, stages, conditionFields, recipientFields)).join('')}
+            ${stages.map(stage => renderWorkflowStagePanel(stage, activeStage, stages, conditionFields, recipientFields, formStages)).join('')}
           </div>
           <div class="actions inline">
             <button class="button primary" type="submit">Save workflow</button>
@@ -1414,7 +1597,7 @@
     `;
   }
 
-  function renderWorkflowStagePanel(stage, activeStage, stages, conditionFields, recipientFields) {
+  function renderWorkflowStagePanel(stage, activeStage, stages, conditionFields, recipientFields, formStages) {
     const steps = stage.steps || [];
     return `
       <section class="workflow-stage-editor" data-workflow-stage-panel data-workflow-stage="${escapeHtml(stage.key)}" ${stage.key === activeStage ? '' : 'hidden'}>
@@ -1426,14 +1609,14 @@
           <button class="button secondary" type="button" data-add-workflow-step data-stage-key="${escapeHtml(stage.key)}">Add step</button>
         </div>
         <div class="workflow-step-list-editor" data-workflow-step-list>
-          ${steps.map((step, index) => renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields)).join('')}
+          ${steps.map((step, index) => renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields, formStages)).join('')}
           <p class="admin-empty" data-workflow-empty ${steps.length ? 'hidden' : ''}>No steps in this stage.</p>
         </div>
       </section>
     `;
   }
 
-  function renderWorkflowStepEditor(step, index, stages, openDetails, conditionFields, recipientFields) {
+  function renderWorkflowStepEditor(step, index, stages, openDetails, conditionFields, recipientFields, formStages) {
     const normalized = step || {};
     const type = normalized.type || 'notification';
     const name = normalized.name || '';
@@ -1443,7 +1626,6 @@
     const copyMode = workflowEmailCopyMode(normalized);
     return `
       <article class="workflow-editor-step" data-workflow-step>
-        <input type="hidden" data-step-field="followUpStage" value="${escapeHtml(normalized.followUpStage || '')}">
         <div class="workflow-step-topline">
           <button class="workflow-drag-handle" type="button" data-workflow-drag-handle draggable="true" title="Drag to reorder" aria-label="Drag step">Drag</button>
           <span class="workflow-step-order" data-step-order>${escapeHtml(String(order))}</span>
@@ -1468,6 +1650,7 @@
           <summary>Step settings</summary>
           <div class="workflow-step-editor-body">
             ${renderWorkflowRecipientControls(normalized, type, recipientFields || [])}
+            ${renderWorkflowFollowUpControls(normalized, isBlockingStep, formStages || [])}
             <details class="workflow-optional-panel" data-workflow-action-panel ${isBlockingStep ? '' : 'hidden'}>
               <summary>Action requirements</summary>
               <label class="check-row">
@@ -1564,6 +1747,42 @@
         </div>
       </section>
     `;
+  }
+
+  function renderWorkflowFollowUpControls(step, isBlockingStep, formStages) {
+    const selectedStage = step.followUpStage || '';
+    const stages = (formStages || []).filter(stage => stage && stage.key && stage.canBeFollowUp !== false);
+    return `
+      <details class="workflow-optional-panel" data-workflow-follow-up-panel ${isBlockingStep ? '' : 'hidden'}>
+        <summary>Stage trigger</summary>
+        <div class="workflow-step-grid">
+          <label class="field workflow-span-2">
+            <span>Start follow-up stage after this step</span>
+            <select data-step-field="followUpStage" ${stages.length || selectedStage ? '' : 'disabled'}>
+              ${workflowFollowUpStageOptions(stages, selectedStage)}
+            </select>
+          </label>
+        </div>
+        <p class="workflow-condition-note">Follow-up stages are defined in the form builder. Only stages with workflow trigger behavior and a supported runtime can be started from an approval step.</p>
+      </details>
+    `;
+  }
+
+  function workflowFollowUpStageOptions(formStages, selected) {
+    const selectedValue = String(selected || '').trim();
+    const stageList = (formStages || []).filter(stage => stage && stage.key);
+    const hasSelected = !selectedValue || stageList.some(stage => stage.key === selectedValue);
+    const list = hasSelected ? stageList : [{ key: selectedValue, label: selectedValue, description: 'Saved stage not currently listed on this form.' }].concat(stageList);
+    return '<option value="">Do not start a form stage</option>' + list.map(stage => {
+      const labelParts = [stage.label || stage.key];
+      if (stage.runtimeType) {
+        labelParts.push(stage.runtimeType);
+      }
+      if (stage.triggerMode) {
+        labelParts.push(stage.triggerMode);
+      }
+      return `<option value="${escapeHtml(stage.key)}" title="${escapeHtml(stage.description || '')}" ${stage.key === selectedValue ? 'selected' : ''}>${escapeHtml(labelParts.join(' - '))}</option>`;
+    }).join('');
   }
 
   function workflowRecipientFieldOptions(recipientFields, selected) {
@@ -1796,10 +2015,10 @@
     `;
   }
 
-  function renderConditionBuilder(fieldName, label, jsonText, conditionFields) {
+  function renderConditionBuilder(fieldName, label, jsonText, conditionFields, emptyText) {
     const parsed = workflowConditionRowsFromJson(jsonText);
     return `
-      <fieldset class="workflow-condition-builder workflow-span-2" data-condition-builder="${escapeHtml(fieldName)}">
+      <fieldset class="workflow-condition-builder workflow-span-2" data-condition-builder="${escapeHtml(fieldName)}" data-condition-fields="${escapeHtml(JSON.stringify(conditionFields || []))}">
         <legend>${escapeHtml(label)}</legend>
         <textarea class="visually-hidden" tabindex="-1" data-step-field="${escapeHtml(fieldName)}" data-condition-raw>${escapeHtml(parsed.raw || jsonText || '')}</textarea>
         <div class="workflow-condition-toolbar">
@@ -1815,7 +2034,7 @@
         ${parsed.raw ? '<p class="workflow-condition-note">This condition is preserved but cannot be shown as picker rows. Add a new condition to replace it.</p>' : ''}
         <div class="workflow-condition-list" data-condition-row-list>
           ${parsed.rows.map(row => renderConditionRow(row, conditionFields)).join('')}
-          <p class="admin-empty" data-condition-empty ${parsed.rows.length ? 'hidden' : ''}>No condition. This step always runs.</p>
+          <p class="admin-empty" data-condition-empty ${parsed.rows.length ? 'hidden' : ''}>${escapeHtml(emptyText || 'No condition. This step always runs.')}</p>
         </div>
       </fieldset>
     `;
@@ -2832,6 +3051,13 @@
           rerenderAdminLanding();
           return;
         }
+
+        const conditionControl = event.target.closest('[data-condition-field], [data-condition-operator]');
+        if (conditionControl) {
+          const row = conditionControl.closest('[data-condition-row]');
+          updateConditionValueControl(row);
+          updateFormBuilderPreview(conditionControl.closest('[data-admin-form-builder-form]'));
+        }
       });
 
       container.addEventListener('click', event => {
@@ -2887,7 +3113,16 @@
         const removeStageButton = event.target.closest('[data-remove-form-stage]');
         if (removeStageButton) {
           event.preventDefault();
-          removeFormBuilderStage(removeStageButton.closest('[data-form-stage-panel]'));
+          const form = removeStageButton.closest('[data-admin-form-builder-form]');
+          removeFormBuilderStage(formBuilderPanelForStageControl(form, removeStageButton));
+          return;
+        }
+
+        const moveStageButton = event.target.closest('[data-move-form-stage]');
+        if (moveStageButton) {
+          event.preventDefault();
+          const form = moveStageButton.closest('[data-admin-form-builder-form]');
+          moveFormBuilderStage(formBuilderPanelForStageControl(form, moveStageButton), moveStageButton.dataset.moveFormStage);
           return;
         }
 
@@ -2950,6 +3185,28 @@
           moveFormBuilderItem(moveFieldButton.closest('[data-form-field]'), moveFieldButton.dataset.moveFormField, '[data-form-field]');
           updateFormBuilderFieldListState(moveFieldButton.closest('[data-form-field-list]'));
           updateFormBuilderPreview(form);
+          return;
+        }
+
+        const addConditionButton = event.target.closest('[data-add-condition-row]');
+        if (addConditionButton) {
+          event.preventDefault();
+          const builder = addConditionButton.closest('[data-condition-builder]');
+          addConditionRow(builder, '');
+          updateFormBuilderPreview(addConditionButton.closest('[data-admin-form-builder-form]'));
+          return;
+        }
+
+        const removeConditionButton = event.target.closest('[data-remove-condition-row]');
+        if (removeConditionButton) {
+          event.preventDefault();
+          const builder = removeConditionButton.closest('[data-condition-builder]');
+          const row = removeConditionButton.closest('[data-condition-row]');
+          if (row) {
+            row.remove();
+          }
+          updateConditionBuilderState(builder);
+          updateFormBuilderPreview(removeConditionButton.closest('[data-admin-form-builder-form]'));
         }
       });
 
@@ -3232,6 +3489,9 @@
       button.classList.toggle('active', active);
       button.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+    form.querySelectorAll('[data-form-stage-nav-item]').forEach(item => {
+      item.classList.toggle('active', item.dataset.formStageNavItem === stage);
+    });
     form.querySelectorAll('[data-form-stage-panel]').forEach(panel => {
       panel.hidden = panel.dataset.formStage !== stage;
     });
@@ -3245,12 +3505,13 @@
     const existing = Array.from(form.querySelectorAll('[data-form-stage-panel]')).map(panel => panel.dataset.formStage);
     const keyInput = form.querySelector('[data-new-form-stage-key]');
     const titleInput = form.querySelector('[data-new-form-stage-title]');
+    const runtimeInput = form.querySelector('[data-new-form-stage-runtime]');
+    const triggerInput = form.querySelector('[data-new-form-stage-trigger]');
     const key = normalize(keyInput ? keyInput.value : '').replace(/\s+/g, '_');
     const management = dashboardState.data && dashboardState.data.formManagement;
     const stageTypes = management ? management.stageTypes || [] : [];
-    const stageType = formBuilderStageType(key, stageTypes);
     if (!key || !/^[a-z][a-z0-9_-]*$/.test(key)) {
-      showNotice('Choose a stage type to add.', 'error');
+      showNotice('Enter a stage key using lowercase letters, numbers, hyphens, or underscores.', 'error');
       if (keyInput) {
         keyInput.focus();
       }
@@ -3260,33 +3521,47 @@
       showNotice(`Stage ${key} already exists.`, 'error');
       return;
     }
-    const title = titleInput && titleInput.value.trim() ? titleInput.value.trim() : '';
+    const label = titleInput && titleInput.value.trim() ? titleInput.value.trim() : key.replace(/[_-]+/g, ' ');
+    const runtimeType = runtimeInput && runtimeInput.value ? runtimeInput.value : 'generic';
+    const triggerMode = triggerInput && triggerInput.value ? triggerInput.value : formBuilderDefaultStageTriggerMode(runtimeType, stageTypes);
     const fieldTypes = management ? management.fieldTypes || [] : [];
-    const tabs = form.querySelector('.workflow-stage-tabs');
+    const tabs = form.querySelector('.form-builder-stage-list');
     const panels = form.querySelector('.form-builder-stage-panels');
     const stageModel = {
       key,
-      label: formBuilderStageLabel(key, stageTypes),
-      triggerSummary: stageType ? stageType.triggerSummary || '' : '',
+      label,
+      runtimeType,
+      triggerMode,
+      triggerSummary: formBuilderStageTriggerSummary(runtimeType, triggerMode, {}, stageTypes),
       definition: {
         key: `${form.dataset.definitionKey}.${key}`,
-        title,
         sections: []
       }
     };
+    let conditionStages = [stageModel];
+    try {
+      conditionStages = formBuilderStages(collectAdminFormSettings(form, { silentJson: true }).definition, form.dataset.definitionKey, stageTypes).concat([stageModel]);
+    } catch (error) {
+      conditionStages = [stageModel];
+    }
+    const conditionFields = formBuilderConditionFields(conditionStages);
     if (tabs) {
-      tabs.insertAdjacentHTML('beforeend', `
-        <button class="button secondary" type="button" role="tab" data-form-stage-tab="${escapeHtml(key)}" aria-selected="false">${escapeHtml(stageModel.label)}</button>
-      `);
+      tabs.insertAdjacentHTML('beforeend', renderFormBuilderStageNavItem(stageModel, '', stageTypes));
     }
     if (panels) {
-      panels.insertAdjacentHTML('beforeend', renderFormBuilderStagePanel(stageModel, '', fieldTypes));
+      panels.insertAdjacentHTML('beforeend', renderFormBuilderStagePanel(stageModel, '', fieldTypes, stageTypes, conditionFields));
     }
     if (keyInput) {
       keyInput.value = '';
     }
     if (titleInput) {
       titleInput.value = '';
+    }
+    if (runtimeInput) {
+      runtimeInput.value = 'generic';
+    }
+    if (triggerInput) {
+      triggerInput.value = 'workflow';
     }
     setFormBuilderStage(form, key);
     updateFormBuilderPreview(form);
@@ -3305,10 +3580,10 @@
       showNotice('The request form stage is required and cannot be removed.', 'error');
       return;
     }
-    const tab = Array.from(form.querySelectorAll('[data-form-stage-tab]'))
-      .find(button => button.dataset.formStageTab === stage);
-    if (tab) {
-      tab.remove();
+    const navItem = Array.from(form.querySelectorAll('[data-form-stage-nav-item]'))
+      .find(item => item.dataset.formStageNavItem === stage);
+    if (navItem) {
+      navItem.remove();
     }
     panel.remove();
     const nextPanel = form.querySelector('[data-form-stage-panel]');
@@ -3318,6 +3593,54 @@
       dashboardState.formBuilderStage = '';
       updateFormBuilderPreview(form);
     }
+  }
+
+  function moveFormBuilderStage(panel, direction) {
+    if (!panel || panel.dataset.formStage === 'request') {
+      return;
+    }
+    const form = panel.closest('[data-admin-form-builder-form]');
+    const stage = panel.dataset.formStage || '';
+    const targetPanel = direction === 'up'
+      ? previousMatchingElement(panel, '[data-form-stage-panel]')
+      : nextMatchingElement(panel, '[data-form-stage-panel]');
+    if (!form || !stage || !targetPanel || targetPanel.dataset.formStage === 'request') {
+      return;
+    }
+    const navItem = Array.from(form.querySelectorAll('[data-form-stage-nav-item]'))
+      .find(item => item.dataset.formStageNavItem === stage);
+    const targetNavItem = Array.from(form.querySelectorAll('[data-form-stage-nav-item]'))
+      .find(item => item.dataset.formStageNavItem === targetPanel.dataset.formStage);
+    if (direction === 'up') {
+      panel.parentNode.insertBefore(panel, targetPanel);
+      if (navItem && targetNavItem) {
+        navItem.parentNode.insertBefore(navItem, targetNavItem);
+      }
+    } else {
+      panel.parentNode.insertBefore(targetPanel, panel);
+      if (navItem && targetNavItem) {
+        navItem.parentNode.insertBefore(targetNavItem, navItem);
+      }
+    }
+    setFormBuilderStage(form, stage);
+    updateFormBuilderPreview(form);
+  }
+
+  function formBuilderPanelForStageControl(form, control) {
+    if (!form || !control) {
+      return null;
+    }
+    const panel = control.closest('[data-form-stage-panel]');
+    if (panel) {
+      return panel;
+    }
+    const navItem = control.closest('[data-form-stage-nav-item]');
+    const stage = navItem ? navItem.dataset.formStageNavItem : '';
+    if (!stage) {
+      return null;
+    }
+    return Array.from(form.querySelectorAll('[data-form-stage-panel]'))
+      .find(item => item.dataset.formStage === stage) || null;
   }
 
   function addFormBuilderSection(panel) {
@@ -3473,10 +3796,12 @@
     const definition = {
       name: formBuilderFieldValue(form, 'definition', 'name'),
       description: formBuilderFieldValue(form, 'definition', 'description'),
+      stages: [],
       forms: {}
     };
     form.querySelectorAll('[data-form-stage-panel]').forEach(panel => {
       const stage = panel.dataset.formStage;
+      definition.stages.push(collectFormBuilderStageMetadata(panel, options || {}));
       definition.forms[stage] = collectFormBuilderStage(panel, form.dataset.definitionKey, stage, options || {});
     });
     return {
@@ -3484,6 +3809,30 @@
       definitionKey: form.dataset.definitionKey,
       definition
     };
+  }
+
+  function collectFormBuilderStageMetadata(panel, options) {
+    const runtimeType = formBuilderFieldValue(panel, 'stage-meta', 'runtimeType') || formBuilderDefaultStageRuntime(panel.dataset.formStage || '');
+    const triggerMode = formBuilderFieldValue(panel, 'stage-meta', 'triggerMode') || formBuilderDefaultStageTriggerMode(runtimeType, []);
+    const whenJson = conditionJsonFromBuilder(panel, 'stageWhen');
+    const unlessJson = conditionJsonFromBuilder(panel, 'stageUnless');
+    const metadata = compactObject({
+      key: formBuilderFieldValue(panel, 'stage-meta', 'key') || panel.dataset.formStage || '',
+      label: formBuilderFieldValue(panel, 'stage-meta', 'label'),
+      runtimeType,
+      triggerMode,
+      description: formBuilderFieldValue(panel, 'stage-meta', 'description')
+    });
+    if (panel.dataset.formStage === 'request') {
+      metadata.required = true;
+    }
+    if (whenJson) {
+      metadata.whenJson = whenJson;
+    }
+    if (unlessJson) {
+      metadata.unlessJson = unlessJson;
+    }
+    return metadata;
   }
 
   function collectFormBuilderStage(panel, definitionKey, stage, options) {
@@ -3639,6 +3988,7 @@
     const stages = currentWorkflowStages(form.dataset.processKey);
     const conditionFields = currentWorkflowConditionFields(form.dataset.processKey);
     const recipientFields = currentWorkflowRecipientFields(form.dataset.processKey);
+    const formStages = currentWorkflowFormStages(form.dataset.processKey);
     const step = {
       type: 'notification',
       name: 'New notification',
@@ -3657,9 +4007,9 @@
     }
     const index = workflowStepCount(list);
     if (empty) {
-      empty.insertAdjacentHTML('beforebegin', renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields));
+      empty.insertAdjacentHTML('beforebegin', renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields, formStages));
     } else {
-      list.insertAdjacentHTML('beforeend', renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields));
+      list.insertAdjacentHTML('beforeend', renderWorkflowStepEditor(step, index, stages, false, conditionFields, recipientFields, formStages));
     }
     updateWorkflowStepVisibility(list.querySelectorAll('[data-workflow-step]')[index]);
     updateWorkflowStepListState(list);
@@ -3722,6 +4072,12 @@
     const management = dashboardState.data && dashboardState.data.workflowManagement;
     const process = management && (management.processes || []).find(item => item.key === processKey);
     return process && process.recipientFields ? process.recipientFields : [];
+  }
+
+  function currentWorkflowFormStages(processKey) {
+    const management = dashboardState.data && dashboardState.data.workflowManagement;
+    const process = management && (management.processes || []).find(item => item.key === processKey);
+    return process && process.formStages ? process.formStages : [];
   }
 
   function workflowStepAfterDrag(list, y) {
@@ -3834,6 +4190,17 @@
     if (actionPanel) {
       actionPanel.hidden = !isWorkflowEditorBlockingType(type);
     }
+    const followUpPanel = step.querySelector('[data-workflow-follow-up-panel]');
+    if (followUpPanel) {
+      const isBlocking = isWorkflowEditorBlockingType(type);
+      followUpPanel.hidden = !isBlocking;
+      if (!isBlocking) {
+        const followUpSelect = followUpPanel.querySelector('[data-step-field="followUpStage"]');
+        if (followUpSelect) {
+          followUpSelect.value = '';
+        }
+      }
+    }
     const notificationCc = step.querySelector('[data-workflow-notification-cc]');
     if (notificationCc) {
       notificationCc.hidden = normalizeWorkflowEditorStepType(type) !== 'notification';
@@ -3876,7 +4243,7 @@
     }
     const list = builder.querySelector('[data-condition-row-list]');
     const empty = builder.querySelector('[data-condition-empty]');
-    const fields = currentWorkflowConditionFields(processKey);
+    const fields = conditionFieldsForBuilder(builder, processKey);
     if (!list) {
       return;
     }
@@ -3904,8 +4271,26 @@
     if (!field || !operator || !wrap) {
       return;
     }
-    const fields = currentWorkflowConditionFields(row.closest('[data-admin-workflow-form]').dataset.processKey);
+    const builder = row.closest('[data-condition-builder]');
+    const workflowForm = row.closest('[data-admin-workflow-form]');
+    const processKey = workflowForm ? workflowForm.dataset.processKey : '';
+    const fields = conditionFieldsForBuilder(builder, processKey);
     wrap.innerHTML = conditionValueControl(field.value, operator.value, '', fields);
+  }
+
+  function conditionFieldsForBuilder(builder, processKey) {
+    const raw = builder ? String(builder.dataset.conditionFields || '').trim() : '';
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch (error) {
+        // Fall through to the workflow process fields.
+      }
+    }
+    return currentWorkflowConditionFields(processKey);
   }
 
   function updateConditionBuilderState(builder) {

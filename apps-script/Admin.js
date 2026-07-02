@@ -353,21 +353,35 @@ function adminFormStageTypes_() {
   return [
     {
       key: 'request',
-      label: 'Request form',
+      label: 'Initial request',
+      description: 'The first form a requester completes. Code owns the public request entry point and request creation flow.',
       required: true,
+      defaultTriggerMode: 'initial',
       triggerSummary: 'Available when a requester starts a new request.'
     },
     {
       key: 'actual',
-      label: 'Actual hours',
+      label: 'Actual-hours confirmation',
+      description: 'Uses the existing actual-hours token, reminder, validation, and final approval flow.',
       required: false,
+      defaultTriggerMode: 'scheduled',
       triggerSummary: 'Available when an actual-hours process asks the requester to confirm final hours.'
     },
     {
       key: 'checklist',
-      label: 'Checklist',
+      label: 'Checklist follow-up',
+      description: 'Uses the existing checklist token, save, submit, and checklist notification flow.',
       required: false,
+      defaultTriggerMode: 'workflow',
       triggerSummary: 'Available when a process starts a checklist follow-up.'
+    },
+    {
+      key: 'generic',
+      label: 'Generic follow-up',
+      description: 'Stores a configurable follow-up stage schema for future or process-specific runtime integrations.',
+      required: false,
+      defaultTriggerMode: 'workflow',
+      triggerSummary: 'Configured in the database; runtime support depends on the process workflow.'
     }
   ];
 }
@@ -390,6 +404,7 @@ function adminWorkflowManagementData_() {
           description: process.description || '',
           completionMode: process.completionMode || '',
           requestForm: process.requestForm || '',
+          formStages: adminWorkflowFormStagesForProcess_(process),
           conditionFields: adminWorkflowConditionFieldsForProcess_(process),
           recipientFields: adminWorkflowRecipientFieldsForProcess_(process),
           stages: adminWorkflowStagesForProcess_(process)
@@ -399,6 +414,29 @@ function adminWorkflowManagementData_() {
         return String(a.name).localeCompare(String(b.name));
       })
   };
+}
+
+function adminWorkflowFormStagesForProcess_(process) {
+  return getFormStages_(process)
+    .filter(function (stage) {
+      return stage && stage.key && stage.key !== 'request';
+    })
+    .map(function (stage) {
+      return {
+        key: stage.key,
+        label: stage.label || stage.key,
+        runtimeType: stage.runtimeType || '',
+        triggerMode: stage.triggerMode || '',
+        description: stage.description || stage.triggerSummary || '',
+        canBeFollowUp: adminWorkflowFormStageCanBeFollowUp_(stage)
+      };
+    });
+}
+
+function adminWorkflowFormStageCanBeFollowUp_(stage) {
+  const runtimeType = trim_(stage && stage.runtimeType);
+  const triggerMode = trim_(stage && stage.triggerMode);
+  return runtimeType === 'checklist' && triggerMode === 'workflow';
 }
 
 function adminWorkflowStagesForProcess_(process) {
@@ -709,6 +747,7 @@ function normalizeAdminFormDefinition_(definition, definitionKey) {
 
   const normalized = cloneObject_(definition);
   normalized.forms = {};
+  normalized.stages = [];
   const name = trim_(definition.name);
   const description = trim_(definition.description);
   if (name) {
@@ -726,6 +765,14 @@ function normalizeAdminFormDefinition_(definition, definitionKey) {
     const stage = normalizeWorkflowStageKey_(stageKey);
     normalized.forms[stage] = normalizeAdminFormStage_(forms[stage] || {}, stage, definitionKey);
   });
+  if (Array.isArray(definition.stages)) {
+    definition.stages.forEach(function (stage) {
+      const stageKey = stage && stage.key ? normalizeWorkflowStageKey_(stage.key) : '';
+      if (stageKey && !normalized.forms[stageKey]) {
+        normalized.forms[stageKey] = normalizeAdminFormStage_({ key: stageKey === 'request' ? definitionKey : `${definitionKey}.${stageKey}`, sections: [] }, stageKey, definitionKey);
+      }
+    });
+  }
 
   if (!Object.keys(normalized.forms).length) {
     normalized.forms.request = normalizeAdminFormStage_({ key: definitionKey, sections: [] }, 'request', definitionKey);
@@ -733,8 +780,122 @@ function normalizeAdminFormDefinition_(definition, definitionKey) {
   if (!normalized.forms.request) {
     throw new Error('A request form stage is required.');
   }
+  normalized.stages = normalizeAdminFormStageMetadataList_(definition.stages, normalized.forms, definitionKey);
 
   return normalized;
+}
+
+function normalizeAdminFormStageMetadataList_(stages, forms, definitionKey) {
+  const submitted = Array.isArray(stages) ? stages : [];
+  const metadataByKey = {};
+  const orderedKeys = [];
+
+  submitted.forEach(function (stage, index) {
+    if (!stage || typeof stage !== 'object' || Array.isArray(stage)) {
+      throw new Error(`Stage ${index + 1} metadata must be an object.`);
+    }
+    const key = normalizeWorkflowStageKey_(stage.key);
+    if (metadataByKey[key]) {
+      throw new Error(`Stage "${key}" is configured more than once.`);
+    }
+    metadataByKey[key] = stage;
+    orderedKeys.push(key);
+  });
+
+  Object.keys(forms || {}).forEach(function (stageKey) {
+    const key = normalizeWorkflowStageKey_(stageKey);
+    if (orderedKeys.indexOf(key) === -1) {
+      orderedKeys.push(key);
+    }
+  });
+  if (orderedKeys.indexOf('request') === -1) {
+    orderedKeys.unshift('request');
+  }
+
+  const sortedKeys = ['request'].concat(orderedKeys.filter(function (key) {
+    return key !== 'request';
+  }));
+  const seen = {};
+  return sortedKeys.filter(function (key) {
+    if (seen[key]) {
+      return false;
+    }
+    seen[key] = true;
+    return true;
+  }).map(function (stageKey, index) {
+    return normalizeAdminFormStageMetadata_(metadataByKey[stageKey] || {}, stageKey, forms[stageKey] || {}, definitionKey, index);
+  });
+}
+
+function normalizeAdminFormStageMetadata_(stage, stageKey, formStage, definitionKey, index) {
+  const runtimeType = normalizeAdminFormStageRuntimeType_(stage.runtimeType || stage.type || defaultAdminFormStageRuntimeType_(stageKey));
+  const triggerMode = normalizeAdminFormStageTriggerMode_(stage.triggerMode || defaultAdminFormStageTriggerMode_(runtimeType));
+  const label = trim_(stage.label) || trim_(formStage.title) || adminFormStageRuntimeLabel_(runtimeType) || stageKey;
+  const normalized = {
+    key: stageKey,
+    label,
+    runtimeType,
+    triggerMode
+  };
+  if (stageKey === 'request' || submittedBoolean_(stage.required)) {
+    normalized.required = true;
+  }
+  const description = trim_(stage.description);
+  if (description) {
+    normalized.description = description;
+  }
+  const triggerSummary = trim_(stage.triggerSummary);
+  if (triggerSummary) {
+    normalized.triggerSummary = triggerSummary;
+  }
+  const when = parseAdminWorkflowCondition_(stage.whenJson !== undefined ? stage.whenJson : stage.when, `Stage ${index + 1} start condition`);
+  const unless = parseAdminWorkflowCondition_(stage.unlessJson !== undefined ? stage.unlessJson : stage.unless, `Stage ${index + 1} skip condition`);
+  if (when) {
+    normalized.when = when;
+  }
+  if (unless) {
+    normalized.unless = unless;
+  }
+  return normalized;
+}
+
+function normalizeAdminFormStageRuntimeType_(value) {
+  const type = trim_(value || 'generic').toLowerCase();
+  const allowed = adminFormStageTypes_().map(function (item) { return item.key; });
+  if (allowed.indexOf(type) === -1) {
+    throw new Error(`Stage runtime type "${value}" is not supported.`);
+  }
+  return type;
+}
+
+function defaultAdminFormStageRuntimeType_(stageKey) {
+  if (stageKey === 'request' || stageKey === 'actual' || stageKey === 'checklist') {
+    return stageKey;
+  }
+  return 'generic';
+}
+
+function adminFormStageRuntimeLabel_(runtimeType) {
+  const match = adminFormStageTypes_().find(function (item) {
+    return item.key === runtimeType;
+  });
+  return match ? match.label : '';
+}
+
+function normalizeAdminFormStageTriggerMode_(value) {
+  const mode = trim_(value || 'workflow').toLowerCase();
+  const allowed = ['initial', 'workflow', 'scheduled', 'manual'];
+  if (allowed.indexOf(mode) === -1) {
+    throw new Error(`Stage trigger mode "${value}" is not supported.`);
+  }
+  return mode;
+}
+
+function defaultAdminFormStageTriggerMode_(runtimeType) {
+  const match = adminFormStageTypes_().find(function (item) {
+    return item.key === runtimeType;
+  });
+  return match ? match.defaultTriggerMode || 'workflow' : 'workflow';
 }
 
 function normalizeAdminFormStage_(stage, stageKey, definitionKey) {
@@ -940,7 +1101,17 @@ function normalizeAdminWorkflowStep_(step, stage, index, process) {
     normalized.unless = unless;
   }
   if (followUpStage) {
-    normalized.followUpStage = normalizeWorkflowStageKey_(followUpStage);
+    const followUpStageKey = normalizeWorkflowStageKey_(followUpStage);
+    const configuredStage = getFormStages_(process).find(function (stage) {
+      return trim_(stage && stage.key) === followUpStageKey;
+    });
+    if (!configuredStage || followUpStageKey === 'request') {
+      throw new Error(`${label} follow-up stage "${followUpStageKey}" is not configured on this process form.`);
+    }
+    if (!adminWorkflowFormStageCanBeFollowUp_(configuredStage)) {
+      throw new Error(`${label} follow-up stage "${followUpStageKey}" is not a workflow-triggerable form stage.`);
+    }
+    normalized.followUpStage = followUpStageKey;
   }
   if (isBlockingWorkflowStepType_(type) && submittedBoolean_(step.requireComment)) {
     normalized.requireComment = true;

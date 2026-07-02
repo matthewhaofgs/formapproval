@@ -47,6 +47,77 @@ function getAllFormDefinitions_(processOrRequest) {
   });
 }
 
+function getFormStages_(processOrRequest) {
+  const process =
+    processOrRequest && processOrRequest.key
+      ? processOrRequest
+      : getProcessDefinition_(processOrRequest);
+  const formKey = trim_(process.requestForm || process.key);
+  const definition = FORM_DEFINITIONS[formKey] || {};
+  const forms = definition.forms || {};
+  const configured = Array.isArray(definition.stages) ? definition.stages : [];
+  const configuredByKey = {};
+  const orderedKeys = [];
+
+  configured.forEach(function (stage) {
+    const key = trim_(stage && stage.key);
+    if (!key || configuredByKey[key]) {
+      return;
+    }
+    configuredByKey[key] = stage;
+    orderedKeys.push(key);
+  });
+  Object.keys(forms).forEach(function (key) {
+    if (orderedKeys.indexOf(key) === -1) {
+      orderedKeys.push(key);
+    }
+  });
+  if (orderedKeys.indexOf('request') === -1) {
+    orderedKeys.unshift('request');
+  }
+
+  return ['request'].concat(orderedKeys.filter(function (key) { return key !== 'request'; }))
+    .filter(function (key, index, list) { return list.indexOf(key) === index; })
+    .map(function (key) {
+      const stage = cloneObject_(configuredByKey[key] || {});
+      stage.key = key;
+      if (!stage.runtimeType) {
+        stage.runtimeType = defaultFormStageRuntimeType_(key);
+      }
+      if (!stage.triggerMode) {
+        stage.triggerMode = defaultFormStageTriggerMode_(stage.runtimeType);
+      }
+      if (!stage.label) {
+        stage.label = (forms[key] && forms[key].title) || key;
+      }
+      return stage;
+    });
+}
+
+function defaultFormStageRuntimeType_(stageKey) {
+  if (stageKey === 'request' || stageKey === 'actual' || stageKey === 'checklist') {
+    return stageKey;
+  }
+  return 'generic';
+}
+
+function defaultFormStageTriggerMode_(runtimeType) {
+  if (runtimeType === 'request') {
+    return 'initial';
+  }
+  if (runtimeType === 'actual') {
+    return 'scheduled';
+  }
+  return 'workflow';
+}
+
+function getFormStageMetadata_(processOrRequest, formStage) {
+  const stage = trim_(formStage || 'request');
+  return cloneObject_(getFormStages_(processOrRequest).find(function (item) {
+    return trim_(item && item.key) === stage;
+  }) || { key: stage, label: stage });
+}
+
 function getFormAdjustmentFields_(formStage, processOrRequest) {
   const formKey = formStage === "actual" || formStage === "checklist" ? formStage : "request";
   const definition = getFormDefinition_(processOrRequest, formKey);
