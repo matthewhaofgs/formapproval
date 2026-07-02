@@ -178,8 +178,9 @@ function completeWorkflowStage_(request, stage, actorEmail, sentNotifications) {
   }
 
   if (stage === 'approval' && getProcessCompletionMode_(request) === 'single_stage') {
-    if (requestNeedsVtrChecklist_(request)) {
-      return startVtrChecklistFollowUp_(request, actorEmail, sentNotifications);
+    const followUpStage = workflowCompletionFollowUpStage_(request);
+    if (followUpStage) {
+      return startWorkflowFollowUpStage_(request, followUpStage, actorEmail, sentNotifications);
     }
 
     request.status = STATUS.APPROVED;
@@ -216,11 +217,34 @@ function completeWorkflowStage_(request, stage, actorEmail, sentNotifications) {
   };
 }
 
+function workflowCompletionFollowUpStage_(request) {
+  return getFormStages_(request).find(function (stage) {
+    return stage &&
+      stage.key &&
+      formStageCanBeFollowUp_(stage) &&
+      formStageMatchesConditions_(request, stage.key);
+  }) || null;
+}
+
+function startWorkflowFollowUpStage_(request, formStage, actorEmail, sentNotifications) {
+  const runtimeType = trim_(formStage && formStage.runtimeType);
+  if (runtimeType === 'checklist') {
+    return startChecklistFollowUpStage_(request, formStage.key, actorEmail, sentNotifications);
+  }
+  throw new Error(`Follow-up stage "${formStage && formStage.key}" uses unsupported runtime "${runtimeType}".`);
+}
+
 function startVtrChecklistFollowUp_(request, actorEmail, sentNotifications) {
+  return startChecklistFollowUpStage_(request, 'checklist', actorEmail, sentNotifications);
+}
+
+function startChecklistFollowUpStage_(request, formStage, actorEmail, sentNotifications) {
   const now = nowIso_();
-  const emailStarted = ensureVtrChecklistEmailStarted_(request, actorEmail || 'system');
+  const stageKey = trim_(formStage || 'checklist');
+  const emailStarted = ensureChecklistFollowUpEmailStarted_(request, stageKey, actorEmail || 'system');
   Object.assign(request, {
     status: STATUS.AWAITING_VTR_CHECKLIST,
+    activeFollowUpStage: stageKey,
     approvalCompletedAt: now,
     finalApprovedAt: now,
     updatedAt: now
@@ -243,17 +267,30 @@ function startVtrChecklistFollowUp_(request, actorEmail, sentNotifications) {
 
 function maybeStartFollowUpStageAfterStep_(request, step, actorEmail) {
   const followUpStage = trim_(step && step.followUpStage);
-  if (followUpStage === 'checklist') {
-    ensureVtrChecklistEmailStarted_(request, actorEmail || 'system');
+  if (!followUpStage) {
+    return;
+  }
+  const formStage = getFormStageMetadata_(request, followUpStage);
+  if (!formStageCanBeFollowUp_(formStage) || !formStageMatchesConditions_(request, followUpStage)) {
+    return;
+  }
+  if (trim_(formStage.runtimeType) === 'checklist') {
+    ensureChecklistFollowUpEmailStarted_(request, followUpStage, actorEmail || 'system');
   }
 }
 
 function ensureVtrChecklistEmailStarted_(request, actorEmail) {
-  if (!requestNeedsVtrChecklist_(request) || request.followUpSentAt) {
+  return ensureChecklistFollowUpEmailStarted_(request, 'checklist', actorEmail);
+}
+
+function ensureChecklistFollowUpEmailStarted_(request, formStage, actorEmail) {
+  const stageKey = trim_(formStage || 'checklist');
+  if (!requestNeedsChecklistFollowUp_(request, stageKey) || request.followUpSentAt) {
     return false;
   }
   const token = createToken_();
   request.employeeActionTokenHash = hashToken_(token);
+  request.activeFollowUpStage = stageKey;
   request.followUpSentAt = nowIso_();
   request.updatedAt = nowIso_();
   updateRequest_(request);
@@ -415,6 +452,16 @@ function normalizeStoredWorkflowStep_(stage, step, fallbackIndex) {
 }
 
 function storedWorkflowStepsForStage_(request, stage) {
+  const workflowStepsByStage = parseJsonObject_(request && request.workflowStepsByStage);
+  if (Array.isArray(workflowStepsByStage[stage]) && workflowStepsByStage[stage].length) {
+    return workflowStepsByStage[stage]
+      .map(function (step, index) {
+        return normalizeStoredWorkflowStep_(stage, step, index);
+      })
+      .filter(function (step) {
+        return step.name || step.email || step.emails.length;
+      });
+  }
   const field = workflowStepsSnapshotField_(stage);
   return parseJsonArray_(request && request[field])
     .map(function (step, index) {
@@ -426,10 +473,14 @@ function storedWorkflowStepsForStage_(request, stage) {
 }
 
 function setWorkflowStepsSnapshot_(request, stage, steps) {
-  const field = workflowStepsSnapshotField_(stage);
-  request[field] = JSON.stringify((steps || []).map(function (step) {
+  const snapshot = (steps || []).map(function (step) {
     return workflowStepSnapshot_(stage, step);
-  }));
+  });
+  const workflowStepsByStage = parseJsonObject_(request.workflowStepsByStage);
+  workflowStepsByStage[stage] = snapshot;
+  request.workflowStepsByStage = JSON.stringify(workflowStepsByStage);
+  const field = workflowStepsSnapshotField_(stage);
+  request[field] = JSON.stringify(snapshot);
 }
 
 function refreshWorkflowStepsSnapshot_(request, stage) {
@@ -521,6 +572,32 @@ function workflowConditionMatches_(condition, request) {
       return workflowConditionEquals_(actual, value);
     });
   }
+  if (condition.contains !== undefined) {
+    return workflowConditionValue_(actual).indexOf(workflowConditionValue_(condition.contains)) !== -1;
+  }
+  if (condition.notContains !== undefined) {
+    return workflowConditionValue_(actual).indexOf(workflowConditionValue_(condition.notContains)) === -1;
+  }
+  if (condition.startsWith !== undefined) {
+    return workflowConditionValue_(actual).indexOf(workflowConditionValue_(condition.startsWith)) === 0;
+  }
+  if (condition.endsWith !== undefined) {
+    const actualValue = workflowConditionValue_(actual);
+    const expectedValue = workflowConditionValue_(condition.endsWith);
+    return expectedValue ? actualValue.slice(-expectedValue.length) === expectedValue : true;
+  }
+  if (condition.greaterThan !== undefined) {
+    return workflowCompareConditionValues_(actual, condition.greaterThan) > 0;
+  }
+  if (condition.greaterThanOrEquals !== undefined) {
+    return workflowCompareConditionValues_(actual, condition.greaterThanOrEquals) >= 0;
+  }
+  if (condition.lessThan !== undefined) {
+    return workflowCompareConditionValues_(actual, condition.lessThan) < 0;
+  }
+  if (condition.lessThanOrEquals !== undefined) {
+    return workflowCompareConditionValues_(actual, condition.lessThanOrEquals) <= 0;
+  }
 
   return Boolean(actual);
 }
@@ -531,6 +608,23 @@ function workflowConditionEquals_(actual, expected) {
 
 function workflowConditionValue_(value) {
   return trim_(value).toLowerCase();
+}
+
+function workflowCompareConditionValues_(actual, expected) {
+  const actualText = workflowConditionValue_(actual);
+  const expectedText = workflowConditionValue_(expected);
+  const actualNumber = Number(actualText);
+  const expectedNumber = Number(expectedText);
+  if (actualText !== '' && expectedText !== '' && !isNaN(actualNumber) && !isNaN(expectedNumber)) {
+    if (actualNumber === expectedNumber) {
+      return 0;
+    }
+    return actualNumber > expectedNumber ? 1 : -1;
+  }
+  if (actualText === expectedText) {
+    return 0;
+  }
+  return actualText > expectedText ? 1 : -1;
 }
 
 function resolveWorkflowStepEmails_(step, request) {

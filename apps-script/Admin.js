@@ -357,6 +357,8 @@ function adminFormStageTypes_() {
       description: 'The first form a requester completes. Code owns the public request entry point and request creation flow.',
       required: true,
       defaultTriggerMode: 'initial',
+      defaultCanBeFollowUp: false,
+      defaultCanBeScheduled: false,
       triggerSummary: 'Available when a requester starts a new request.'
     },
     {
@@ -365,6 +367,8 @@ function adminFormStageTypes_() {
       description: 'Uses the existing actual-hours token, reminder, validation, and final approval flow.',
       required: false,
       defaultTriggerMode: 'scheduled',
+      defaultCanBeFollowUp: false,
+      defaultCanBeScheduled: true,
       triggerSummary: 'Available when an actual-hours process asks the requester to confirm final hours.'
     },
     {
@@ -373,6 +377,8 @@ function adminFormStageTypes_() {
       description: 'Uses the existing checklist token, save, submit, and checklist notification flow.',
       required: false,
       defaultTriggerMode: 'workflow',
+      defaultCanBeFollowUp: true,
+      defaultCanBeScheduled: false,
       triggerSummary: 'Available when a process starts a checklist follow-up.'
     },
     {
@@ -381,6 +387,8 @@ function adminFormStageTypes_() {
       description: 'Stores a configurable follow-up stage schema for future or process-specific runtime integrations.',
       required: false,
       defaultTriggerMode: 'workflow',
+      defaultCanBeFollowUp: false,
+      defaultCanBeScheduled: false,
       triggerSummary: 'Configured in the database; runtime support depends on the process workflow.'
     }
   ];
@@ -428,15 +436,14 @@ function adminWorkflowFormStagesForProcess_(process) {
         runtimeType: stage.runtimeType || '',
         triggerMode: stage.triggerMode || '',
         description: stage.description || stage.triggerSummary || '',
-        canBeFollowUp: adminWorkflowFormStageCanBeFollowUp_(stage)
+        canBeFollowUp: adminWorkflowFormStageCanBeFollowUp_(stage),
+        canBeScheduled: Boolean(stage.canBeScheduled)
       };
     });
 }
 
 function adminWorkflowFormStageCanBeFollowUp_(stage) {
-  const runtimeType = trim_(stage && stage.runtimeType);
-  const triggerMode = trim_(stage && stage.triggerMode);
-  return runtimeType === 'checklist' && triggerMode === 'workflow';
+  return formStageCanBeFollowUp_(stage);
 }
 
 function adminWorkflowStagesForProcess_(process) {
@@ -848,6 +855,22 @@ function normalizeAdminFormStageMetadata_(stage, stageKey, formStage, definition
   if (triggerSummary) {
     normalized.triggerSummary = triggerSummary;
   }
+  const canBeFollowUp = normalizeAdminFormStageCapability_(
+    stage.canBeFollowUp,
+    defaultAdminFormStageCanBeFollowUp_(runtimeType, triggerMode)
+  );
+  const canBeScheduled = normalizeAdminFormStageCapability_(
+    stage.canBeScheduled,
+    defaultAdminFormStageCanBeScheduled_(runtimeType, triggerMode)
+  );
+  if (canBeFollowUp && triggerMode !== 'workflow') {
+    throw new Error(`Stage ${index + 1} can only be started from workflow steps when its trigger mode is Workflow follow-up.`);
+  }
+  if (canBeScheduled && triggerMode !== 'scheduled') {
+    throw new Error(`Stage ${index + 1} can only be scheduled when its trigger mode is Scheduled follow-up.`);
+  }
+  normalized.canBeFollowUp = canBeFollowUp;
+  normalized.canBeScheduled = canBeScheduled;
   const when = parseAdminWorkflowCondition_(stage.whenJson !== undefined ? stage.whenJson : stage.when, `Stage ${index + 1} start condition`);
   const unless = parseAdminWorkflowCondition_(stage.unlessJson !== undefined ? stage.unlessJson : stage.unless, `Stage ${index + 1} skip condition`);
   if (when) {
@@ -873,6 +896,27 @@ function defaultAdminFormStageRuntimeType_(stageKey) {
     return stageKey;
   }
   return 'generic';
+}
+
+function normalizeAdminFormStageCapability_(value, fallback) {
+  if (value === undefined || value === null || value === '') {
+    return Boolean(fallback);
+  }
+  return submittedBoolean_(value);
+}
+
+function defaultAdminFormStageCanBeFollowUp_(runtimeType, triggerMode) {
+  const match = adminFormStageTypes_().find(function (item) {
+    return item.key === runtimeType;
+  });
+  return Boolean(match && match.defaultCanBeFollowUp) && triggerMode === 'workflow';
+}
+
+function defaultAdminFormStageCanBeScheduled_(runtimeType, triggerMode) {
+  const match = adminFormStageTypes_().find(function (item) {
+    return item.key === runtimeType;
+  });
+  return Boolean(match && match.defaultCanBeScheduled) && triggerMode === 'scheduled';
 }
 
 function adminFormStageRuntimeLabel_(runtimeType) {

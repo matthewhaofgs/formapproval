@@ -165,7 +165,7 @@ function getInitialState_(params) {
       token,
       requestId: request.requestId,
       request: publicRequest_(request),
-      formDefinition: publicFormDefinition_(request, 'checklist')
+      formDefinition: publicFormDefinition_(request, checklistFollowUpStageKey_(request))
     });
   }
 
@@ -532,13 +532,14 @@ function submitVtrChecklist(payload) {
     if (!request.followUpSentAt) {
       throw new Error(`Request ${request.requestId} is not ready for the VTR checklist.`);
     }
-    if (!requestNeedsVtrChecklist_(request)) {
+    const checklistStage = checklistFollowUpStageKey_(request);
+    if (!requestNeedsChecklistFollowUp_(request, checklistStage)) {
       throw new Error(`Request ${request.requestId} does not require a separate checklist.`);
     }
 
     const checklistAction = normalizeVtrChecklistAction_(payload && payload.checklistAction);
     const checklist = validateVtrChecklistForm_(payload || {}, request);
-    const checklistFields = getFormAdjustmentFields_('checklist', request);
+    const checklistFields = getFormAdjustmentFields_(checklistStage, request);
     const previousChecklist = snapshotFields_(request, checklistFields);
     const actorEmail = token ? request.employeeEmail : getAuthenticatedEmail_(payload || {});
     const now = nowIso_();
@@ -1161,9 +1162,10 @@ function validateActualHoursForm_(payload, request) {
 }
 
 function validateVtrChecklistForm_(payload, request) {
-  const definition = getFormDefinition_(request, 'checklist');
+  const stageKey = checklistFollowUpStageKey_(request);
+  const definition = getFormDefinition_(request, stageKey);
   if (!definition || !definition.key) {
-    throw new Error(`No VTR checklist form definition is configured for "${request.processType || getDefaultProcessKey_()}".`);
+    throw new Error(`No checklist form definition is configured for "${request.processType || getDefaultProcessKey_()}" stage "${stageKey}".`);
   }
   return validateConfiguredForm_(payload || {}, request.processType || getDefaultProcessKey_(), definition, {
     sourceRecord: request
@@ -1171,11 +1173,21 @@ function validateVtrChecklistForm_(payload, request) {
 }
 
 function requestNeedsVtrChecklist_(request) {
-  const definition = getFormDefinition_(request, 'checklist');
-  return isVtrRequest_(request) &&
-    Boolean(definition && definition.key) &&
-    !workflowConditionEquals_(request.eventType, 'Assessment') &&
-    formStageMatchesConditions_(request, 'checklist');
+  return requestNeedsChecklistFollowUp_(request, checklistFollowUpStageKey_(request));
+}
+
+function requestNeedsChecklistFollowUp_(request, formStage) {
+  const stageKey = trim_(formStage || request.activeFollowUpStage || 'checklist');
+  const definition = getFormDefinition_(request, stageKey);
+  const stage = getFormStageMetadata_(request, stageKey);
+  return Boolean(definition && definition.key) &&
+    trim_(stage.runtimeType) === 'checklist' &&
+    formStageCanBeFollowUp_(stage) &&
+    formStageMatchesConditions_(request, stageKey);
+}
+
+function checklistFollowUpStageKey_(request) {
+  return trim_(request && request.activeFollowUpStage) || 'checklist';
 }
 
 function normalizeVtrChecklistAction_(value) {

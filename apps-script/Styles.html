@@ -1853,7 +1853,11 @@
   }
 
   .workflow-optional-panel .check-row input {
+    accent-color: var(--navy);
+    flex: 0 0 auto;
+    height: 18px;
     margin: 0;
+    width: 18px;
   }
 
   .workflow-copy-mode {
@@ -2223,8 +2227,16 @@
     min-height: 32px;
   }
 
+  .form-builder-stage-nav-actions .form-builder-stage-settings-button,
   .form-builder-stage-nav-actions .form-builder-remove-button {
     grid-column: 1 / -1;
+  }
+
+  .form-builder-stage-settings .check-row {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #ffffff;
+    min-height: 44px;
   }
 
   .form-builder-add-stage-panel {

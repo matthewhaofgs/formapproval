@@ -138,6 +138,8 @@ test('admin dashboard exposes global-admin user access management', () => {
   assert.match(js, /data-form-stage-tab/);
   assert.match(js, /data-form-stage-nav-item/);
   assert.match(js, /data-form-stage-panel/);
+  assert.match(js, /data-open-form-stage-settings/);
+  assert.match(js, /data-form-stage-settings-panel/);
   assert.match(js, /data-new-form-stage-key/);
   assert.match(js, /data-new-form-stage-runtime/);
   assert.match(js, /data-new-form-stage-trigger/);
@@ -149,11 +151,16 @@ test('admin dashboard exposes global-admin user access management', () => {
   assert.match(js, /function formBuilderDefaultStageRuntime\(stageKey\)/);
   assert.match(js, /function formBuilderStageTriggerModes\(\)/);
   assert.match(js, /function formBuilderStageMetaSummary\(stage, sectionCount, questionCount, stageTypes\)/);
+  assert.match(js, /function openFormBuilderStageSettings\(form, stageNavItem\)/);
   assert.match(js, /data-add-form-stage/);
   assert.match(js, /data-remove-form-stage/);
   assert.match(js, /data-move-form-stage="up"/);
   assert.match(js, /data-stage-meta-field="runtimeType"/);
   assert.match(js, /data-stage-meta-field="triggerMode"/);
+  assert.match(js, /data-stage-meta-field="canBeFollowUp"/);
+  assert.match(js, /data-stage-meta-field="canBeScheduled"/);
+  assert.match(js, /function formBuilderDefaultStageCanBeFollowUp\(runtimeType, triggerMode, stageTypes\)/);
+  assert.match(js, /function formBuilderStageCapability\(value, fallback\)/);
   assert.match(js, /function formBuilderConditionFields\(stages\)/);
   assert.match(js, /function renderFormBuilderEditor\(form, fieldTypes, stageTypes\)[\s\S]*const conditionFields = formBuilderConditionFields\(stages\);[\s\S]*renderFormBuilderStagePanel\(stage, activeStage, fieldTypes, stageTypes, conditionFields\)/);
   assert.match(js, /renderConditionBuilder\('stageWhen', 'Start when'/);
@@ -272,6 +279,9 @@ test('admin dashboard exposes global-admin user access management', () => {
   assert.match(js, /data-condition-field/);
   assert.match(js, /data-condition-operator/);
   assert.match(js, /data-condition-value/);
+  assert.match(js, /\['contains', 'Contains text'\]/);
+  assert.match(js, /\['greaterThanOrEquals', 'Greater than or equal to'\]/);
+  assert.match(js, /operator === 'contains'[\s\S]*return \{ field, contains: value \}/);
   assert.match(js, /function conditionFieldsForBuilder\(builder, processKey\)/);
   assert.match(js, /function conditionJsonFromBuilder\(step, fieldName\)/);
   assert.match(js, /function bindAdminWorkflowManagement\(\)/);
@@ -282,6 +292,7 @@ test('admin dashboard exposes global-admin user access management', () => {
   assert.match(admin, /function adminWorkflowFormStagesForProcess_\(process\)/);
   assert.match(admin, /function adminWorkflowFormStageCanBeFollowUp_\(stage\)/);
   assert.match(admin, /canBeFollowUp: adminWorkflowFormStageCanBeFollowUp_\(stage\)/);
+  assert.match(admin, /canBeScheduled: Boolean\(stage\.canBeScheduled\)/);
   assert.match(admin, /is not a workflow-triggerable form stage/);
   assert.match(admin, /defaultSubject/);
   assert.match(admin, /effectiveSubject/);
@@ -296,7 +307,12 @@ test('admin dashboard exposes global-admin user access management', () => {
   assert.match(admin, /function normalizeAdminFormStageMetadataList_\(stages, forms, definitionKey\)/);
   assert.match(admin, /function normalizeAdminFormStageRuntimeType_\(value\)/);
   assert.match(admin, /function normalizeAdminFormStageTriggerMode_\(value\)/);
-  assert.match(requests, /formStageMatchesConditions_\(request, 'checklist'\)/);
+  assert.match(admin, /function defaultAdminFormStageCanBeFollowUp_\(runtimeType, triggerMode\)/);
+  assert.match(formDefinitionRuntime, /function formStageCanBeFollowUp_\(stage\)/);
+  assert.match(workflowEngine, /function workflowCompletionFollowUpStage_\(request\)/);
+  assert.match(workflowEngine, /workflowStepsByStage/);
+  assert.match(requests, /function requestNeedsChecklistFollowUp_\(request, formStage\)/);
+  assert.doesNotMatch(requests, /!workflowConditionEquals_\(request\.eventType, 'Assessment'\)/);
   assert.match(workflowEngine, /function formStageMatchesConditions_\(request, formStage\)/);
   assert.match(triggers, /formStageMatchesConditions_\(request, 'actual'\)/);
   assert.match(admin, /function saveAdminFormSettings_\(settings\)/);
@@ -326,6 +342,7 @@ test('admin dashboard exposes global-admin user access management', () => {
   assert.match(css, /\.form-builder-stage-list\s*\{/);
   assert.match(css, /\.form-builder-stage-nav-item\s*\{/);
   assert.match(css, /\.form-builder-stage-nav-actions\s*\{/);
+  assert.match(css, /\.form-builder-stage-nav-actions \.form-builder-stage-settings-button/);
   assert.match(css, /\.form-builder-add-stage-panel\s*\{/);
   assert.match(css, /\.form-builder-preview\s*\{/);
   assert.match(css, /\.form-builder-section-header\s*\{/);

@@ -813,6 +813,7 @@ test('VTR approval starts the separate checklist follow-up for non-assessment re
 
   assert.equal(result.ok, true);
   assert.equal(request.status, harness.api.STATUS.AWAITING_VTR_CHECKLIST);
+  assert.equal(request.activeFollowUpStage, 'checklist');
   assert.equal(request.followUpDueDate, '');
   assert.notEqual(request.employeeActionTokenHash, '');
   assert.equal(dashboard.requests[0].isClosed, false);
@@ -881,6 +882,7 @@ test('form stage metadata conditions can suppress a configured follow-up stage',
       label: 'Checklist',
       runtimeType: 'checklist',
       triggerMode: 'workflow',
+      canBeFollowUp: true,
       when: { field: 'costToStudents', equals: 'Yes' }
     }
   ];
@@ -899,6 +901,16 @@ test('form stage metadata conditions can suppress a configured follow-up stage',
   assert.equal(request.status, harness.api.STATUS.APPROVED);
   assert.equal(request.employeeActionTokenHash, '');
   assert.equal(harness.mail.some(mail => /complete VTR checklist/i.test(mail.subject || '')), false);
+
+  harness.api.FORM_DEFINITIONS.vtr.stages[1].canBeFollowUp = false;
+  harness.api.submitRequest(defaultVtrRequest({ eventName: 'Capability disabled event', costToStudents: 'Yes' }));
+  const secondToken = latestWorkflowToken(harness, 'hod@example.edu');
+  harness.setActiveUser('hod@example.edu');
+  harness.api.submitApprovalDecision({ token: secondToken, decision: 'approve' });
+  const secondRequest = harness.requests.find(request => request.eventName === 'Capability disabled event');
+  assert.ok(secondRequest, 'Expected second VTR request');
+  assert.equal(secondRequest.status, harness.api.STATUS.APPROVED);
+  assert.equal(secondRequest.activeFollowUpStage, '');
 });
 
 test('VTR workflow follows the updated initial approval, final approval, and risk acknowledgement branches', () => {
@@ -1799,7 +1811,10 @@ test('notification steps allow many recipients, while blocking steps must resolv
 
 test('workflow conditions support any-match groups for related checklist answers', () => {
   const harness = createAppsScriptHarness();
-  const request = defaultRequest({ plannedHours: '1' });
+  const request = defaultRequest({
+    plannedHours: '1',
+    reason: 'Library event support'
+  });
 
   assert.deepEqual(
     Array.from(harness.api.resolveWorkflowSteps_([
@@ -1830,6 +1845,35 @@ test('workflow conditions support any-match groups for related checklist answers
             { field: 'compensationMethod', equals: 'Accumulate for later Time Off in Lieu (TOIL)' }
           ]
         }
+      }
+    ], request)),
+    []
+  );
+
+  assert.deepEqual(
+    Array.from(harness.api.resolveWorkflowSteps_([
+      {
+        type: 'notification',
+        name: 'Contains and comparison notification',
+        email: 'one@example.edu',
+        when: {
+          all: [
+            { field: 'reason', contains: 'library' },
+            { field: 'plannedHours', lessThanOrEquals: '2' }
+          ]
+        }
+      }
+    ], request).map(step => step.name)),
+    ['Contains and comparison notification']
+  );
+
+  assert.deepEqual(
+    Array.from(harness.api.resolveWorkflowSteps_([
+      {
+        type: 'notification',
+        name: 'Comparison suppressed notification',
+        email: 'one@example.edu',
+        when: { field: 'plannedHours', greaterThan: '2' }
       }
     ], request)),
     []
@@ -2581,6 +2625,8 @@ test('global admins can create and edit database-backed form definitions from th
       label: 'Risk review',
       runtimeType: 'generic',
       triggerMode: 'workflow',
+      canBeFollowUp: false,
+      canBeScheduled: false,
       when: { field: 'category', equals: 'B' }
     }
   );

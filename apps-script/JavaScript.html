@@ -741,12 +741,16 @@
         const stageMeta = stageMap[stageKey] || {};
         const runtimeType = stageMeta.runtimeType || formBuilderDefaultStageRuntime(stageKey);
         const triggerMode = stageMeta.triggerMode || formBuilderDefaultStageTriggerMode(runtimeType, stageTypes);
+        const canBeFollowUp = formBuilderStageCapability(stageMeta.canBeFollowUp, formBuilderDefaultStageCanBeFollowUp(runtimeType, triggerMode, stageTypes));
+        const canBeScheduled = formBuilderStageCapability(stageMeta.canBeScheduled, formBuilderDefaultStageCanBeScheduled(runtimeType, triggerMode, stageTypes));
         const label = stageMeta.label || stageDefinition.title || formBuilderStageRuntimeLabel(runtimeType, stageTypes) || stageKey;
         return {
           key: stageKey,
           label,
           runtimeType,
           triggerMode,
+          canBeFollowUp,
+          canBeScheduled,
           description: stageMeta.description || '',
           triggerSummary: stageMeta.triggerSummary || formBuilderStageTriggerSummary(runtimeType, triggerMode, stageMeta, stageTypes),
           required: stageKey === 'request' || Boolean(stageMeta.required),
@@ -762,8 +766,8 @@
       ? stageTypes
       : [
         { key: 'request', label: 'Initial request', description: 'The first form a requester completes.', required: true, defaultTriggerMode: 'initial', triggerSummary: 'Available when a requester starts a new request.' },
-        { key: 'actual', label: 'Actual-hours confirmation', description: 'Uses the existing actual-hours flow.', required: false, defaultTriggerMode: 'scheduled', triggerSummary: 'Available when an actual-hours process asks for final hours.' },
-        { key: 'checklist', label: 'Checklist follow-up', description: 'Uses the existing checklist flow.', required: false, defaultTriggerMode: 'workflow', triggerSummary: 'Available when a process starts a checklist follow-up.' },
+        { key: 'actual', label: 'Actual-hours confirmation', description: 'Uses the existing actual-hours flow.', required: false, defaultTriggerMode: 'scheduled', defaultCanBeScheduled: true, triggerSummary: 'Available when an actual-hours process asks for final hours.' },
+        { key: 'checklist', label: 'Checklist follow-up', description: 'Uses the existing checklist flow.', required: false, defaultTriggerMode: 'workflow', defaultCanBeFollowUp: true, triggerSummary: 'Available when a process starts a checklist follow-up.' },
         { key: 'generic', label: 'Generic follow-up', description: 'Stores a configurable stage for future or process-specific runtime integrations.', required: false, defaultTriggerMode: 'workflow', triggerSummary: 'Configured in the database.' }
       ];
   }
@@ -784,6 +788,26 @@
   function formBuilderStageRuntimeLabel(runtimeType, stageTypes) {
     const stageType = formBuilderStageType(runtimeType, stageTypes);
     return stageType ? stageType.label || stageType.key : runtimeType;
+  }
+
+  function formBuilderDefaultStageCanBeFollowUp(runtimeType, triggerMode, stageTypes) {
+    const stageType = formBuilderStageType(runtimeType, stageTypes);
+    return Boolean(stageType && stageType.defaultCanBeFollowUp) && triggerMode === 'workflow';
+  }
+
+  function formBuilderDefaultStageCanBeScheduled(runtimeType, triggerMode, stageTypes) {
+    const stageType = formBuilderStageType(runtimeType, stageTypes);
+    return Boolean(stageType && stageType.defaultCanBeScheduled) && triggerMode === 'scheduled';
+  }
+
+  function formBuilderStageCapability(value, fallback) {
+    if (value === undefined || value === null || value === '') {
+      return Boolean(fallback);
+    }
+    if (value === true || value === false) {
+      return value;
+    }
+    return ['true', 'yes', '1', 'on'].indexOf(normalize(value)) !== -1;
   }
 
   function formBuilderStageTriggerSummary(runtimeType, triggerMode, stageMeta, stageTypes) {
@@ -836,6 +860,12 @@
     }
     if (triggerLabel && triggerLabel.toLowerCase() !== String(runtimeLabel || '').toLowerCase()) {
       parts.push(triggerLabel);
+    }
+    if (stage.canBeFollowUp) {
+      parts.push('workflow-startable');
+    }
+    if (stage.canBeScheduled) {
+      parts.push('scheduled');
     }
     parts.push(`${sectionCount} sections`);
     parts.push(`${questionCount} questions`);
@@ -905,13 +935,14 @@
           <span class="request-meta">${escapeHtml(stage.key)}</span>
           <span class="request-meta">${escapeHtml(formBuilderStageMetaSummary(stage, sections.length, questionCount, stageTypes))}</span>
         </button>
-        ${stage.key === 'request' ? '' : `
-          <div class="form-builder-stage-nav-actions" aria-label="Manage ${escapeHtml(stage.label || stage.key)} stage">
+        <div class="form-builder-stage-nav-actions" aria-label="Manage ${escapeHtml(stage.label || stage.key)} stage">
+          <button class="button secondary form-builder-stage-settings-button" type="button" data-open-form-stage-settings title="Open the editable settings for this stage.">Settings</button>
+          ${stage.key === 'request' ? '' : `
             <button class="button secondary form-builder-icon-button" type="button" data-move-form-stage="up" title="Move stage up" aria-label="Move stage up">&uarr;</button>
             <button class="button secondary form-builder-icon-button" type="button" data-move-form-stage="down" title="Move stage down" aria-label="Move stage down">&darr;</button>
             <button class="button danger form-builder-remove-button" type="button" data-remove-form-stage title="Remove this stage from the form definition. Existing submitted data is not deleted, but future users will not see this stage.">Remove</button>
-          </div>
-        `}
+          `}
+        </div>
       </div>
     `;
   }
@@ -966,7 +997,7 @@
             <button class="button primary" type="button" data-add-form-section title="Add a new section to this stage.">+ Add section</button>
           </div>
         </div>
-        <details class="workflow-optional-panel form-builder-stage-config">
+        <details class="workflow-optional-panel form-builder-stage-config" data-form-stage-settings-panel>
           <summary>${formBuilderSummary('Stage settings', 'Controls the stage identity, runtime behavior, public heading, submit button wording, and audit fields for this stage.')}</summary>
           <div class="form-builder-stage-settings">
             <label class="field">
@@ -988,6 +1019,14 @@
               <select data-stage-meta-field="triggerMode">
                 ${formBuilderStageTriggerModeOptions(stage.triggerMode || 'workflow')}
               </select>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" data-stage-meta-field="canBeFollowUp" ${stage.canBeFollowUp ? 'checked' : ''}>
+              <span>Workflow can start this stage ${formBuilderHelp('Makes this stage available in approval-flow steps as a follow-up form stage. Use this only for runtime behaviours the app can currently send to a requester, such as checklist follow-ups.')}</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" data-stage-meta-field="canBeScheduled" ${stage.canBeScheduled ? 'checked' : ''}>
+              <span>Scheduled job can start this stage ${formBuilderHelp('Marks this stage as a scheduled follow-up. Current scheduled runtime support is used for actual-hours confirmation stages.')}</span>
             </label>
             <label class="field workflow-span-2">
               ${formBuilderLabel('Stage description', 'Admin-facing note about when this stage is used. This helps future admins understand why the stage exists.')}
@@ -2089,6 +2128,30 @@
     if (condition.notIn !== undefined) {
       return { field: condition.field, operator: 'notIn', value: [].concat(condition.notIn).join(', ') };
     }
+    if (condition.contains !== undefined) {
+      return { field: condition.field, operator: 'contains', value: condition.contains };
+    }
+    if (condition.notContains !== undefined) {
+      return { field: condition.field, operator: 'notContains', value: condition.notContains };
+    }
+    if (condition.startsWith !== undefined) {
+      return { field: condition.field, operator: 'startsWith', value: condition.startsWith };
+    }
+    if (condition.endsWith !== undefined) {
+      return { field: condition.field, operator: 'endsWith', value: condition.endsWith };
+    }
+    if (condition.greaterThan !== undefined) {
+      return { field: condition.field, operator: 'greaterThan', value: condition.greaterThan };
+    }
+    if (condition.greaterThanOrEquals !== undefined) {
+      return { field: condition.field, operator: 'greaterThanOrEquals', value: condition.greaterThanOrEquals };
+    }
+    if (condition.lessThan !== undefined) {
+      return { field: condition.field, operator: 'lessThan', value: condition.lessThan };
+    }
+    if (condition.lessThanOrEquals !== undefined) {
+      return { field: condition.field, operator: 'lessThanOrEquals', value: condition.lessThanOrEquals };
+    }
     if (condition.equals !== undefined) {
       return { field: condition.field, operator: 'equals', value: condition.equals };
     }
@@ -2145,6 +2208,14 @@
       ['notEquals', 'Does not equal'],
       ['in', 'Is one of'],
       ['notIn', 'Is not one of'],
+      ['contains', 'Contains text'],
+      ['notContains', 'Does not contain'],
+      ['startsWith', 'Starts with'],
+      ['endsWith', 'Ends with'],
+      ['greaterThan', 'Greater than'],
+      ['greaterThanOrEquals', 'Greater than or equal to'],
+      ['lessThan', 'Less than'],
+      ['lessThanOrEquals', 'Less than or equal to'],
       ['exists', 'Has any value'],
       ['notExists', 'Is blank']
     ];
@@ -2155,7 +2226,20 @@
 
   function conditionValueControl(fieldName, operator, value, conditionFields) {
     const values = conditionFieldValues(fieldName, conditionFields);
-    const needsValue = ['equals', 'notEquals', 'in', 'notIn'].indexOf(operator) !== -1;
+    const needsValue = [
+      'equals',
+      'notEquals',
+      'in',
+      'notIn',
+      'contains',
+      'notContains',
+      'startsWith',
+      'endsWith',
+      'greaterThan',
+      'greaterThanOrEquals',
+      'lessThan',
+      'lessThanOrEquals'
+    ].indexOf(operator) !== -1;
     if (!needsValue) {
       return `
         <span>Value</span>
@@ -3103,6 +3187,16 @@
           return;
         }
 
+        const stageSettingsButton = event.target.closest('[data-open-form-stage-settings]');
+        if (stageSettingsButton) {
+          event.preventDefault();
+          openFormBuilderStageSettings(
+            stageSettingsButton.closest('[data-admin-form-builder-form]'),
+            stageSettingsButton.closest('[data-form-stage-nav-item]')
+          );
+          return;
+        }
+
         const addStageButton = event.target.closest('[data-add-form-stage]');
         if (addStageButton) {
           event.preventDefault();
@@ -3498,6 +3592,30 @@
     updateFormBuilderPreview(form);
   }
 
+  function openFormBuilderStageSettings(form, stageNavItem) {
+    if (!form || !stageNavItem) {
+      return;
+    }
+    const stage = stageNavItem.dataset.formStageNavItem || '';
+    if (!stage) {
+      return;
+    }
+    setFormBuilderStage(form, stage);
+    const panel = Array.from(form.querySelectorAll('[data-form-stage-panel]')).find(item => {
+      return item.dataset.formStage === stage;
+    });
+    const settingsPanel = panel ? panel.querySelector('[data-form-stage-settings-panel]') : null;
+    if (!settingsPanel) {
+      return;
+    }
+    settingsPanel.open = true;
+    settingsPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    const firstEditable = settingsPanel.querySelector('[data-stage-meta-field="label"], [data-stage-meta-field="runtimeType"], [data-stage-meta-field="triggerMode"]');
+    if (firstEditable && typeof firstEditable.focus === 'function') {
+      firstEditable.focus({ preventScroll: true });
+    }
+  }
+
   function addFormBuilderStage(form) {
     if (!form) {
       return;
@@ -3532,6 +3650,8 @@
       label,
       runtimeType,
       triggerMode,
+      canBeFollowUp: formBuilderDefaultStageCanBeFollowUp(runtimeType, triggerMode, stageTypes),
+      canBeScheduled: formBuilderDefaultStageCanBeScheduled(runtimeType, triggerMode, stageTypes),
       triggerSummary: formBuilderStageTriggerSummary(runtimeType, triggerMode, {}, stageTypes),
       definition: {
         key: `${form.dataset.definitionKey}.${key}`,
@@ -3821,6 +3941,8 @@
       label: formBuilderFieldValue(panel, 'stage-meta', 'label'),
       runtimeType,
       triggerMode,
+      canBeFollowUp: formBuilderStageMetaChecked(panel, 'canBeFollowUp'),
+      canBeScheduled: formBuilderStageMetaChecked(panel, 'canBeScheduled'),
       description: formBuilderFieldValue(panel, 'stage-meta', 'description')
     });
     if (panel.dataset.formStage === 'request') {
@@ -3910,6 +4032,11 @@
 
   function formBuilderFieldChecked(root, name) {
     const input = root ? root.querySelector(`[data-field-prop="${name}"]`) : null;
+    return Boolean(input && input.checked);
+  }
+
+  function formBuilderStageMetaChecked(root, name) {
+    const input = root ? root.querySelector(`[data-stage-meta-field="${name}"]`) : null;
     return Boolean(input && input.checked);
   }
 
@@ -4348,6 +4475,30 @@
     }
     if (operator === 'notIn') {
       return { field, notIn: Array.isArray(value) ? value : splitWorkflowList(value) };
+    }
+    if (operator === 'contains') {
+      return { field, contains: value };
+    }
+    if (operator === 'notContains') {
+      return { field, notContains: value };
+    }
+    if (operator === 'startsWith') {
+      return { field, startsWith: value };
+    }
+    if (operator === 'endsWith') {
+      return { field, endsWith: value };
+    }
+    if (operator === 'greaterThan') {
+      return { field, greaterThan: value };
+    }
+    if (operator === 'greaterThanOrEquals') {
+      return { field, greaterThanOrEquals: value };
+    }
+    if (operator === 'lessThan') {
+      return { field, lessThan: value };
+    }
+    if (operator === 'lessThanOrEquals') {
+      return { field, lessThanOrEquals: value };
     }
     return { field, equals: value };
   }

@@ -90,6 +90,8 @@ function getFormStages_(processOrRequest) {
       if (!stage.label) {
         stage.label = (forms[key] && forms[key].title) || key;
       }
+      stage.canBeFollowUp = formStageCanBeFollowUp_(stage);
+      stage.canBeScheduled = formStageCanBeScheduled_(stage);
       return stage;
     });
 }
@@ -111,6 +113,47 @@ function defaultFormStageTriggerMode_(runtimeType) {
   return 'workflow';
 }
 
+function formStageCanBeFollowUp_(stage) {
+  return formStageBooleanSetting_(
+    stage && stage.canBeFollowUp,
+    defaultFormStageCanBeFollowUp_(stage || {})
+  );
+}
+
+function defaultFormStageCanBeFollowUp_(stage) {
+  return trim_(stage && stage.runtimeType) === 'checklist' &&
+    trim_(stage && stage.triggerMode) === 'workflow';
+}
+
+function formStageCanBeScheduled_(stage) {
+  return formStageBooleanSetting_(
+    stage && stage.canBeScheduled,
+    defaultFormStageCanBeScheduled_(stage || {})
+  );
+}
+
+function defaultFormStageCanBeScheduled_(stage) {
+  return trim_(stage && stage.runtimeType) === 'actual' &&
+    trim_(stage && stage.triggerMode) === 'scheduled';
+}
+
+function formStageBooleanSetting_(value, fallback) {
+  if (value === undefined || value === null || value === '') {
+    return Boolean(fallback);
+  }
+  if (value === true || value === false) {
+    return value;
+  }
+  const normalized = trim_(value).toLowerCase();
+  if (['yes', 'true', '1', 'on'].indexOf(normalized) !== -1) {
+    return true;
+  }
+  if (['no', 'false', '0', 'off'].indexOf(normalized) !== -1) {
+    return false;
+  }
+  return Boolean(fallback);
+}
+
 function getFormStageMetadata_(processOrRequest, formStage) {
   const stage = trim_(formStage || 'request');
   return cloneObject_(getFormStages_(processOrRequest).find(function (item) {
@@ -119,7 +162,8 @@ function getFormStageMetadata_(processOrRequest, formStage) {
 }
 
 function getFormAdjustmentFields_(formStage, processOrRequest) {
-  const formKey = formStage === "actual" || formStage === "checklist" ? formStage : "request";
+  const stage = trim_(formStage || 'request');
+  const formKey = stage === 'approval' ? 'request' : stage;
   const definition = getFormDefinition_(processOrRequest, formKey);
   const fieldMap = formFieldMap_(definition);
   return (definition.adjustmentFields || [])
