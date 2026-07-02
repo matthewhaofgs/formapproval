@@ -40,6 +40,8 @@
     email: state.currentUserEmail || '',
     selectedProcess: state.selectedProcess || '',
     adminView: state.adminView || 'forms',
+    formBuilderKey: state.formBuilderKey || '',
+    formBuilderStage: state.formBuilderStage || '',
     workflowProcess: state.workflowProcess || '',
     workflowStage: state.workflowStage || '',
     roleAvailability: normalizeRoleAvailability(state.roleAvailability),
@@ -493,17 +495,19 @@
   function renderAdminProcessChooser(data) {
     const processes = Array.isArray(data) ? data : (data.adminProcesses || []);
     const dashboards = Array.isArray(data) ? {} : (data.adminDashboards || {});
-    const activeView = data.canManageUsers && ['users', 'workflows'].indexOf(dashboardState.adminView) !== -1
+    const activeView = data.canManageUsers && ['builder', 'users', 'workflows'].indexOf(dashboardState.adminView) !== -1
       ? dashboardState.adminView
       : 'forms';
     return `
       <div class="stack">
         ${renderAdminSubmenu(activeView, data.canManageUsers)}
-        ${activeView === 'users'
-          ? renderAdminUserManagement(data.userManagement || {})
-          : (activeView === 'workflows'
-            ? renderAdminWorkflowManagement(data.workflowManagement || {})
-            : renderAdminDashboardChooserContent(data, processes, dashboards))}
+        ${activeView === 'builder'
+          ? renderAdminFormManagement(data.formManagement || {})
+          : (activeView === 'users'
+            ? renderAdminUserManagement(data.userManagement || {})
+            : (activeView === 'workflows'
+              ? renderAdminWorkflowManagement(data.workflowManagement || {})
+              : renderAdminDashboardChooserContent(data, processes, dashboards)))}
       </div>
     `;
   }
@@ -515,6 +519,7 @@
     return `
       <nav class="admin-submenu" aria-label="Admin menu">
         ${adminSubmenuButton('forms', 'Form dashboards', activeView)}
+        ${adminSubmenuButton('builder', 'Form builder', activeView)}
         ${adminSubmenuButton('users', 'User access', activeView)}
         ${adminSubmenuButton('workflows', 'Approval flows', activeView)}
       </nav>
@@ -539,6 +544,685 @@
         process => `data-admin-process="${escapeHtml(process.key)}" data-admin-cached="${dashboards[process.key] ? 'true' : 'false'}"`
       )}
     `;
+  }
+
+  function renderAdminFormManagement(formManagement) {
+    const forms = formManagement.forms || [];
+    const stageTypes = formManagement.stageTypes || [];
+    const selected = selectedFormBuilderDefinition(forms);
+    if (!selected) {
+      dashboardState.formBuilderKey = '';
+      dashboardState.formBuilderStage = '';
+    }
+    return `
+      <section class="admin-form-builder" data-admin-form-management>
+        <div class="panel-header">
+          <div>
+            <h3>Form builder</h3>
+          </div>
+        </div>
+        ${selected ? renderFormBuilderEditor(selected, formManagement.fieldTypes || [], stageTypes) : renderFormBuilderIndex(forms, stageTypes)}
+      </section>
+    `;
+  }
+
+  function selectedFormBuilderDefinition(forms) {
+    if (!forms.length || !dashboardState.formBuilderKey) {
+      return null;
+    }
+    return forms.find(form => form.key === dashboardState.formBuilderKey) || null;
+  }
+
+  function renderFormBuilderIndex(forms, stageTypes) {
+    return `
+      <div class="form-builder-index">
+        <section class="form-builder-index-main">
+          <div class="dashboard-process-heading">
+            <h4>Existing forms</h4>
+            <div class="process-counts">
+              <span>${escapeHtml(String((forms || []).length))} total</span>
+            </div>
+          </div>
+          ${forms && forms.length
+            ? `<div class="form-builder-card-grid">${forms.map(form => renderFormBuilderCard(form, stageTypes)).join('')}</div>`
+            : '<p class="admin-empty">No form definitions found.</p>'}
+        </section>
+        ${renderFormBuilderCreatePanel()}
+      </div>
+    `;
+  }
+
+  function renderFormBuilderCard(form, stageTypes) {
+    const definition = form.definition || { forms: {} };
+    const stages = formBuilderStages(definition, form.key, stageTypes);
+    const sectionCount = stages.reduce((total, stage) => total + ((stage.definition.sections || []).length), 0);
+    const questionCount = stages.reduce((total, stage) => {
+      return total + (stage.definition.sections || []).reduce((sectionTotal, section) => sectionTotal + ((section.fields || []).length), 0);
+    }, 0);
+    const usage = (form.processUsage || []).map(process => process.name || process.key).join(', ');
+    return `
+      <button class="form-builder-card" type="button" data-edit-form-definition="${escapeHtml(form.key)}">
+        <span class="form-builder-card-title">${escapeHtml(form.name || form.key)}</span>
+        <span class="request-meta">${escapeHtml(form.key)}</span>
+        <span class="form-builder-card-description">${escapeHtml(form.description || (usage ? `Used by ${usage}` : 'Not linked to a process'))}</span>
+        <span class="form-builder-card-stats">
+          <span>${escapeHtml(String(stages.length))} stages</span>
+          <span>${escapeHtml(String(sectionCount))} sections</span>
+          <span>${escapeHtml(String(questionCount))} questions</span>
+        </span>
+        <span class="form-builder-card-action">Open editor</span>
+      </button>
+    `;
+  }
+
+  function renderFormBuilderCreatePanel() {
+    return `
+      <section class="form-builder-create-panel">
+        <h4>Create form</h4>
+        <div class="form-builder-create-grid">
+          <label class="field">
+            ${formBuilderLabel('Form key', 'A permanent internal identifier for this form. Use lowercase letters, numbers, underscores, or hyphens. It is used in URLs and database records, so choose it carefully.')}
+            <input type="text" data-new-form-key placeholder="e.g. leave_request" autocomplete="off">
+          </label>
+          <label class="field">
+            ${formBuilderLabel('Display name', 'The friendly name admins and users will see for this form. This can be changed later without changing the form key.')}
+            <input type="text" data-new-form-name placeholder="Leave Request">
+          </label>
+          <button class="button primary" type="button" data-create-form-definition title="Create a new unsaved form definition and open it in the editor.">+ Create draft</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function formBuilderLabel(label, help) {
+    return `<span class="form-builder-control-label"><span>${escapeHtml(label)}</span>${formBuilderHelp(help)}</span>`;
+  }
+
+  function formBuilderHelp(help) {
+    const text = String(help || '').trim();
+    if (!text) {
+      return '';
+    }
+    return `<span class="form-builder-help" tabindex="0" role="note" aria-label="${escapeHtml(text)}" data-tooltip="${escapeHtml(text)}">?</span>`;
+  }
+
+  function formBuilderSummary(label, help) {
+    return `${escapeHtml(label)}${formBuilderHelp(help)}`;
+  }
+
+  function renderFormBuilderEditor(form, fieldTypes, stageTypes) {
+    const definition = form.definition || { forms: {} };
+    const stages = formBuilderStages(definition, form.key, stageTypes);
+    const activeStage = formBuilderActiveStage(stages);
+    const usage = (form.processUsage || []).map(process => process.name || process.key).join(', ');
+    return `
+      <div class="form-builder-editor-shell">
+        <div class="form-builder-editor-heading">
+          <button class="button secondary" type="button" data-form-builder-back title="Return to the list of form definitions. Unsaved changes on this screen are not saved automatically.">Back to forms</button>
+          <div>
+            <span class="request-meta">Form editor</span>
+            <h4>${escapeHtml(definition.name || form.name || form.key)}</h4>
+            <span class="request-meta">${escapeHtml(form.key)}${usage ? ` - ${escapeHtml(usage)}` : ''}</span>
+          </div>
+          <button class="button primary" type="button" data-save-form-builder title="Save this form definition to the database.">Save form definition</button>
+        </div>
+        <div class="form-builder-editor-layout">
+          <form class="form-builder-editor stack" data-admin-form-builder-form data-definition-key="${escapeHtml(form.key)}" novalidate>
+            <div class="form-builder-meta">
+              <label class="field">
+                ${formBuilderLabel('Form key', 'Read-only once the form exists. This is the stable internal identifier used by processes and stored requests.')}
+                <input type="text" value="${escapeHtml(form.key)}" readonly>
+              </label>
+              <label class="field">
+                ${formBuilderLabel('Display name', 'The friendly form name shown in admin screens.')}
+                <input type="text" data-definition-field="name" value="${escapeHtml(definition.name || form.name || '')}">
+              </label>
+              <label class="field workflow-span-2">
+                ${formBuilderLabel('Description', 'A short admin-facing description of what this form is for.')}
+                <input type="text" data-definition-field="description" value="${escapeHtml(definition.description || form.description || '')}">
+              </label>
+            </div>
+            ${renderFormBuilderStageTabs(stages, activeStage)}
+            <div class="form-builder-stage-panels">
+              ${stages.map(stage => renderFormBuilderStagePanel(stage, activeStage, fieldTypes)).join('')}
+            </div>
+            <div class="form-builder-stage-actions">
+              <details class="workflow-optional-panel">
+                <summary>${formBuilderSummary('Add stage', 'Stages are separate screens for the same form workflow. Only supported runtime stages can be added here.')}</summary>
+                <div class="form-builder-create-grid">
+                  <label class="field">
+                    ${formBuilderLabel('Stage type', 'Choose the kind of form screen to add. Request is the initial form; actual hours and checklist are follow-up screens used by supported processes.')}
+                    <select data-new-form-stage-key>
+                      ${formBuilderAvailableStageOptions(stages, stageTypes)}
+                    </select>
+                  </label>
+                  <label class="field">
+                    ${formBuilderLabel('Stage title', 'Optional heading shown at the top of this stage. Leave blank to use the default stage label.')}
+                    <input type="text" data-new-form-stage-title placeholder="Checklist">
+                  </label>
+                  <button class="button secondary" type="button" data-add-form-stage title="Add the selected supported stage to this form definition.">+ Add stage</button>
+                </div>
+              </details>
+              <button class="button primary" type="submit" title="Save this form definition to the database.">Save form definition</button>
+            </div>
+          </form>
+          ${renderFormBuilderPreview(definition, activeStage, stageTypes)}
+        </div>
+      </div>
+    `;
+  }
+
+  function formBuilderStages(definition, definitionKey, stageTypes) {
+    const forms = definition.forms || {};
+    const stageKeys = Object.keys(forms);
+    if (stageKeys.indexOf('request') === -1) {
+      stageKeys.unshift('request');
+    }
+    const order = formBuilderStageTypes(stageTypes).reduce((map, item, index) => {
+      map[item.key] = index + 1;
+      return map;
+    }, {});
+    stageKeys.sort((a, b) => {
+      const aOrder = order[a] || 100;
+      const bOrder = order[b] || 100;
+      if (aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+      return String(a).localeCompare(String(b));
+    });
+    return stageKeys.map(stageKey => ({
+      key: stageKey,
+      label: formBuilderStageLabel(stageKey, stageTypes),
+      triggerSummary: formBuilderStageTriggerSummary(stageKey, stageTypes),
+      definition: forms[stageKey] || {
+        key: stageKey === 'request' ? definitionKey : `${definitionKey}.${stageKey}`,
+        sections: []
+      }
+    }));
+  }
+
+  function formBuilderStageTypes(stageTypes) {
+    return stageTypes && stageTypes.length
+      ? stageTypes
+      : [
+        { key: 'request', label: 'Request form', required: true, triggerSummary: 'Available when a requester starts a new request.' },
+        { key: 'actual', label: 'Actual hours', required: false, triggerSummary: 'Available when an actual-hours process asks for final hours.' },
+        { key: 'checklist', label: 'Checklist', required: false, triggerSummary: 'Available when a process starts a checklist follow-up.' }
+      ];
+  }
+
+  function formBuilderStageType(stageKey, stageTypes) {
+    return formBuilderStageTypes(stageTypes).find(item => item.key === stageKey) || null;
+  }
+
+  function formBuilderStageLabel(stageKey, stageTypes) {
+    const stageType = formBuilderStageType(stageKey, stageTypes);
+    return stageType ? stageType.label || stageType.key : stageKey;
+  }
+
+  function formBuilderStageTriggerSummary(stageKey, stageTypes) {
+    const stageType = formBuilderStageType(stageKey, stageTypes);
+    return stageType ? stageType.triggerSummary || '' : '';
+  }
+
+  function formBuilderAvailableStageOptions(stages, stageTypes) {
+    const existing = (stages || []).reduce((map, stage) => {
+      map[stage.key] = true;
+      return map;
+    }, {});
+    const available = formBuilderStageTypes(stageTypes)
+      .filter(stage => !existing[stage.key]);
+    if (!available.length) {
+      return '<option value="">All supported stages are already present</option>';
+    }
+    return available
+      .map(stage => `<option value="${escapeHtml(stage.key)}" title="${escapeHtml(stage.triggerSummary || '')}">${escapeHtml(stage.label || stage.key)}</option>`)
+      .join('');
+  }
+
+  function formBuilderActiveStage(stages) {
+    return (stages.find(stage => stage.key === dashboardState.formBuilderStage) || stages[0] || { key: 'request' }).key;
+  }
+
+  function renderFormBuilderStageTabs(stages, activeStage) {
+    return `
+      <div class="workflow-stage-tabs" role="tablist" aria-label="Form stages">
+        ${stages.map(stage => `
+          <button class="button secondary ${stage.key === activeStage ? 'active' : ''}" type="button" role="tab" data-form-stage-tab="${escapeHtml(stage.key)}" ${stage.key === activeStage ? 'aria-selected="true"' : 'aria-selected="false"'}>
+            ${escapeHtml(stage.label)}
+          </button>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderFormBuilderStagePanel(stage, activeStage, fieldTypes) {
+    const definition = stage.definition || {};
+    const sections = definition.sections || [];
+    const questionCount = sections.reduce((total, section) => total + ((section.fields || []).length), 0);
+    return `
+      <section class="form-builder-stage" data-form-stage-panel data-form-stage="${escapeHtml(stage.key)}" ${stage.key === activeStage ? '' : 'hidden'}>
+        <input type="hidden" data-stage-field="key" value="${escapeHtml(definition.key || '')}">
+        <div class="form-builder-stage-heading">
+          <div>
+            <span class="request-meta">Stage</span>
+            <h4>${escapeHtml(definition.title || stage.label)}</h4>
+            <span class="request-meta">${escapeHtml(String(sections.length))} sections - ${escapeHtml(String(questionCount))} questions</span>
+            ${stage.triggerSummary ? `<span class="form-builder-stage-trigger">${escapeHtml(stage.triggerSummary)}</span>` : ''}
+          </div>
+          <div class="form-builder-stage-heading-actions">
+            <button class="button primary" type="button" data-add-form-section title="Add a new section to this stage.">+ Add section</button>
+            ${stage.key === 'request' ? '' : '<button class="button danger" type="button" data-remove-form-stage title="Remove this stage from the form definition. Existing submitted data is not deleted, but future users will not see this stage.">Remove stage</button>'}
+          </div>
+        </div>
+        <details class="workflow-optional-panel form-builder-stage-config">
+          <summary>${formBuilderSummary('Stage settings', 'Controls the heading, explanatory text, submit button wording, and audit fields for this stage.')}</summary>
+          <div class="form-builder-stage-settings">
+            <label class="field">
+              ${formBuilderLabel('Stage key', 'The internal stage identifier. This maps to runtime behavior and cannot be changed here.')}
+              <input type="text" value="${escapeHtml(stage.key)}" readonly>
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Stage title', 'Heading shown at the top of this stage in the user-facing form.')}
+              <input type="text" data-stage-field="title" value="${escapeHtml(definition.title || '')}">
+            </label>
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Description', 'Short text shown below the stage title. Use this for plain-language context before the questions start.')}
+              <input type="text" data-stage-field="description" value="${escapeHtml(definition.description || '')}">
+            </label>
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Intro HTML', 'Optional rich introductory content shown before sections. Use only trusted HTML because it is rendered into the page.')}
+              <textarea rows="3" data-stage-field="introHtml">${escapeHtml(definition.introHtml || '')}</textarea>
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Submit label', 'Text on the main submit button for this stage, such as Submit request or Submit checklist.')}
+              <input type="text" data-stage-field="submitLabel" value="${escapeHtml(definition.submitLabel || '')}">
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Edit submit label', 'Button text used when an existing request is being edited rather than created.')}
+              <input type="text" data-stage-field="editSubmitLabel" value="${escapeHtml(definition.editSubmitLabel || '')}">
+            </label>
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Adjustment fields', 'Comma-separated field names tracked in the workflow history when a request is edited. Use field names from questions in this stage.')}
+              <input type="text" data-stage-field="adjustmentFields" value="${escapeHtml((definition.adjustmentFields || []).join(', '))}" placeholder="fieldOne, fieldTwo">
+            </label>
+          </div>
+          <details class="workflow-optional-panel workflow-span-2">
+            <summary>${formBuilderSummary('Advanced stage schema', 'Raw JSON for stage properties that are not yet represented by the visual editor. Use this only when a developer has confirmed the property name and format.')}</summary>
+            <div class="workflow-step-grid">
+              <label class="field workflow-span-2">
+                ${formBuilderLabel('Additional stage properties JSON', 'Extra stage-level JSON merged into the saved form definition. Invalid JSON will prevent saving.')}
+                <textarea rows="4" data-stage-extra-json>${escapeHtml(formBuilderStageExtraJson(definition))}</textarea>
+              </label>
+            </div>
+          </details>
+        </details>
+        <div class="form-builder-section-list" data-form-section-list>
+          ${sections.map((section, index) => renderFormBuilderSection(section, index, fieldTypes)).join('')}
+          <p class="admin-empty" data-form-section-empty ${sections.length ? 'hidden' : ''}>No sections in this stage.</p>
+        </div>
+        <div class="actions inline">
+          <button class="button primary" type="button" data-add-form-section title="Add a new section to this stage.">+ Add section</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderFormBuilderSection(section, index, fieldTypes) {
+    const fields = section.fields || [];
+    return `
+      <article class="form-builder-section" data-form-section>
+        <div class="form-builder-section-header">
+          <span class="workflow-step-order" data-section-order>${escapeHtml(String(index + 1))}</span>
+          <div class="form-builder-section-title">
+            <label class="field">
+              ${formBuilderLabel('Section title', 'Heading for a group of related questions. Good section titles help users understand why the questions are grouped together.')}
+              <input type="text" data-section-field="title" value="${escapeHtml(section.title || '')}" placeholder="Untitled section">
+            </label>
+            <span class="request-meta">${escapeHtml(String(fields.length))} questions</span>
+          </div>
+          <div class="form-builder-row-actions">
+            <div class="form-builder-move-group" aria-label="Move section">
+              <span>Move</span>
+              <button class="button secondary form-builder-icon-button" type="button" data-move-form-section="up" title="Move section up" aria-label="Move section up">&uarr;</button>
+              <button class="button secondary form-builder-icon-button" type="button" data-move-form-section="down" title="Move section down" aria-label="Move section down">&darr;</button>
+            </div>
+            <button class="button danger form-builder-remove-button" type="button" data-remove-form-section title="Remove this section and all questions inside it from the form definition.">Remove</button>
+          </div>
+        </div>
+        <details class="workflow-optional-panel form-builder-section-config">
+          <summary>${formBuilderSummary('Section settings', 'Controls the section layout and optional text shown before the questions in this section.')}</summary>
+          <div class="form-builder-section-settings">
+            <label class="field">
+              ${formBuilderLabel('Layout', 'How questions in this section are arranged. Grid is the standard two-column layout; stack puts each question on its own row; three-column is for short compact fields.')}
+              <select data-section-field="layout">
+                ${formBuilderLayoutOptions(section.layout || 'grid')}
+              </select>
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Description', 'Short explanatory text shown under the section title.')}
+              <input type="text" data-section-field="description" value="${escapeHtml(section.description || '')}">
+            </label>
+          </div>
+          <details class="workflow-optional-panel workflow-span-2">
+            <summary>${formBuilderSummary('Edit-mode copy', 'Optional alternate title or description shown when users are editing an existing request instead of submitting a new one.')}</summary>
+            <div class="workflow-step-grid">
+              <label class="field">
+                ${formBuilderLabel('Edit title', 'Replacement section title shown during request edits. Leave blank to reuse the normal section title.')}
+                <input type="text" data-section-field="editTitle" value="${escapeHtml(section.editTitle || '')}">
+              </label>
+              <label class="field">
+                ${formBuilderLabel('Edit description', 'Replacement section description shown during request edits. Leave blank to reuse the normal section description.')}
+                <input type="text" data-section-field="editDescription" value="${escapeHtml(section.editDescription || '')}">
+              </label>
+            </div>
+          </details>
+        </details>
+        <div class="form-builder-question-heading">
+          <strong>Questions</strong>
+          <span class="request-meta">${escapeHtml(String(fields.length))} total</span>
+          <button class="button primary" type="button" data-add-form-field title="Add a new question to this section.">+ Add question</button>
+        </div>
+        <div class="form-builder-field-list" data-form-field-list>
+          ${fields.map((field, fieldIndex) => renderFormBuilderField(field, fieldIndex, fieldTypes)).join('')}
+          <p class="admin-empty" data-form-field-empty ${fields.length ? 'hidden' : ''}>No questions in this section.</p>
+        </div>
+        <div class="actions inline">
+          <button class="button primary" type="button" data-add-form-field title="Add a new question to this section.">+ Add question</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderFormBuilderField(field, index, fieldTypes) {
+    const type = field.type || 'text';
+    const optionsText = formBuilderOptionsText(field.options);
+    return `
+      <article class="form-builder-field" data-form-field>
+        <div class="form-builder-question-row">
+          <span class="workflow-step-order" data-field-order>${escapeHtml(String(index + 1))}</span>
+          <div class="form-builder-question-main">
+            <label class="field">
+              ${formBuilderLabel('Question label', 'The question text users will read on the form. Keep this clear and specific.')}
+              <input type="text" data-field-prop="label" value="${escapeHtml(field.label || '')}" placeholder="Untitled question">
+            </label>
+            <span class="request-meta">${escapeHtml(formBuilderFieldTypeLabel(type, fieldTypes))}${field.name ? ` - ${escapeHtml(field.name)}` : ''}</span>
+          </div>
+          <label class="field form-builder-question-type">
+            ${formBuilderLabel('Type', 'Controls how the user answers: text boxes, dates, dropdowns, radio buttons, checklist choices, content blocks, summaries, and specialised calculated/warning blocks.')}
+            <select data-field-prop="type" title="${escapeHtml(formBuilderFieldTypeDescription(type, fieldTypes))}">
+              ${formBuilderFieldTypeOptions(fieldTypes, type)}
+            </select>
+          </label>
+          <div class="form-builder-row-actions">
+            <div class="form-builder-move-group" aria-label="Move question">
+              <span>Move</span>
+              <button class="button secondary form-builder-icon-button" type="button" data-move-form-field="up" title="Move question up" aria-label="Move question up">&uarr;</button>
+              <button class="button secondary form-builder-icon-button" type="button" data-move-form-field="down" title="Move question down" aria-label="Move question down">&darr;</button>
+            </div>
+            <button class="button danger form-builder-remove-button" type="button" data-remove-form-field title="Remove this question from the form definition. Existing submitted data is not deleted, but future submissions will not include this question.">Remove</button>
+          </div>
+        </div>
+        <details class="workflow-optional-panel form-builder-question-config">
+          <summary>${formBuilderSummary('Question settings', 'Common settings for the selected question: internal field name, layout, help text, and whether the question must be answered.')}</summary>
+          <div class="form-builder-field-grid">
+            <label class="field">
+              ${formBuilderLabel('Field name', 'The internal name used to store this answer and reference it in workflows, conditions, emails, exports, and dashboards. Use a short camelCase name and avoid changing it after requests exist.')}
+              <input type="text" data-field-prop="name" value="${escapeHtml(field.name || '')}" placeholder="camelCaseName">
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Layout', 'Controls how wide this question appears inside its section. Full width is useful for long text, instructions, or checklist-style questions.')}
+              <select data-field-prop="layout">
+                ${formBuilderFieldLayoutOptions(field.layout || '')}
+              </select>
+            </label>
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Help text', 'Small guidance shown under the question label on the user-facing form. Use this to explain what answer is expected.')}
+              <input type="text" data-field-prop="help" value="${escapeHtml(field.help || '')}">
+            </label>
+            <label class="check-row">
+              <input type="checkbox" data-field-prop="required" ${field.required ? 'checked' : ''}>
+              <span>Required ${formBuilderHelp('Users must answer this question before they can submit the stage. For checkbox-style confirmation questions, use Must be checked when the user must tick the box.')}</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" data-field-prop="mustBeChecked" ${field.mustBeChecked ? 'checked' : ''}>
+              <span>Must be checked ${formBuilderHelp('For checkbox-style questions, the answer must be ticked/affirmative rather than merely present. Useful for acknowledgements and confirmations.')}</span>
+            </label>
+          </div>
+        </details>
+        <details class="workflow-optional-panel form-builder-question-config" data-form-field-options-panel ${formBuilderFieldSupportsOptions(type) ? '' : 'hidden'}>
+          <summary>${formBuilderSummary('Answer options', 'Choices shown for dropdown, radio, choice-card, and checklist-choice questions.')}</summary>
+          <div class="workflow-step-grid">
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Options', 'One option per line for simple choices. Advanced options can be JSON objects with value and label properties.')}
+              <textarea rows="4" data-field-prop="options" placeholder="One option per line, or JSON for complex options">${escapeHtml(optionsText)}</textarea>
+            </label>
+          </div>
+        </details>
+        <details class="workflow-optional-panel form-builder-question-config" data-form-field-content-panel ${formBuilderFieldSupportsContent(type) ? '' : 'hidden'}>
+          <summary>${formBuilderSummary('Display content', 'Content shown to the user without collecting an answer. Use for instructions, policy text, or separators that need richer formatting.')}</summary>
+          <div class="workflow-step-grid">
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Content HTML', 'HTML rendered directly into the form. Use only trusted, simple markup. This field does not collect an answer.')}
+              <textarea rows="3" data-field-prop="html">${escapeHtml(field.html || '')}</textarea>
+            </label>
+          </div>
+        </details>
+        <details class="workflow-optional-panel form-builder-question-config">
+          <summary>${formBuilderSummary('Conditional and advanced settings', 'Less common settings: hidden/default values, conditional visibility/required rules, and raw schema properties not yet exposed as controls.')}</summary>
+          <div class="workflow-step-grid">
+            <label class="field">
+              ${formBuilderLabel('Hidden value', 'Stores a fixed value for hidden fields or specialised calculated flows. Most normal questions should leave this blank.')}
+              <input type="text" data-field-prop="hiddenValue" value="${escapeHtml(field.hiddenValue || '')}">
+            </label>
+            <label class="field">
+              ${formBuilderLabel('Default value', 'Initial value shown before the user answers. Use only when a sensible default reduces work without hiding a decision.')}
+              <input type="text" data-field-prop="defaultValue" value="${escapeHtml(field.defaultValue || '')}">
+            </label>
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Visible when JSON', 'Condition JSON that decides when this question appears, for example {"field":"multiDayEvent","equals":"Yes"}. Leave blank when always visible.')}
+              <textarea rows="3" data-field-prop="visibleWhen">${escapeHtml(field.visibleWhen ? JSON.stringify(field.visibleWhen, null, 2) : '')}</textarea>
+            </label>
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Required when JSON', 'Condition JSON that makes this question required only in specific cases. Leave blank when the normal Required checkbox is enough.')}
+              <textarea rows="3" data-field-prop="requiredWhen">${escapeHtml(field.requiredWhen ? JSON.stringify(field.requiredWhen, null, 2) : '')}</textarea>
+            </label>
+            <label class="field workflow-span-2">
+              ${formBuilderLabel('Additional properties JSON', 'Raw field-level JSON for supported properties that are not yet represented by visual controls. Invalid JSON will prevent saving.')}
+              <textarea rows="4" data-field-extra-json>${escapeHtml(formBuilderExtraJson(field))}</textarea>
+            </label>
+          </div>
+        </details>
+      </article>
+    `;
+  }
+
+  function formBuilderFieldTypeLabel(type, fieldTypes) {
+    const item = (fieldTypes || []).find(candidate => candidate.value === type);
+    return item ? item.label || item.value : type;
+  }
+
+  function formBuilderFieldTypeDescription(type, fieldTypes) {
+    const item = (fieldTypes || []).find(candidate => candidate.value === type);
+    return item ? item.description || item.label || item.value || '' : '';
+  }
+
+  function formBuilderFieldTypeOptions(fieldTypes, selected) {
+    return (fieldTypes || []).map(item => {
+      const value = item.value || '';
+      const label = item.label || value;
+      const description = item.description || label;
+      return `<option value="${escapeHtml(value)}" title="${escapeHtml(description)}" ${value === selected ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+  }
+
+  function formBuilderFieldSupportsOptions(type) {
+    return ['radio', 'select', 'choiceCards', 'checklistChoice'].indexOf(type) !== -1;
+  }
+
+  function formBuilderFieldSupportsContent(type) {
+    return type === 'content';
+  }
+
+  function renderFormBuilderPreview(definition, activeStage, stageTypes) {
+    const stages = formBuilderStages(definition || {}, '', stageTypes);
+    const stage = stages.find(item => item.key === activeStage) || stages[0] || { key: 'request', definition: { sections: [] } };
+    const stageDefinition = stage.definition || {};
+    const title = stageDefinition.title || definition.name || formBuilderStageLabel(stage.key, stageTypes);
+    return `
+      <aside class="form-builder-preview" data-form-builder-preview>
+        <div class="form-builder-preview-heading">
+          <span>Live preview</span>
+          <strong>${escapeHtml(stage.label)} view</strong>
+        </div>
+        <div class="form-builder-preview-surface">
+          <div class="form-builder-preview-form">
+            <h4>${escapeHtml(title)}</h4>
+            ${stageDefinition.description ? `<p class="muted">${escapeHtml(stageDefinition.description)}</p>` : ''}
+            ${stageDefinition.introHtml ? `<div class="form-builder-preview-content">${stageDefinition.introHtml}</div>` : ''}
+            ${(stageDefinition.sections || []).map(renderFormBuilderPreviewSection).join('')}
+            <button class="button primary form-builder-preview-submit" type="button">${escapeHtml(stageDefinition.submitLabel || 'Submit')}</button>
+          </div>
+        </div>
+      </aside>
+    `;
+  }
+
+  function renderFormBuilderPreviewSection(section) {
+    const layout = section.layout === 'grid-three' ? 'grid-three' : (section.layout === 'stack' ? 'stack' : 'grid');
+    return `
+      <section class="form-builder-preview-section">
+        ${section.title ? `<h5>${escapeHtml(section.title)}</h5>` : ''}
+        ${section.description ? `<p class="muted">${escapeHtml(section.description)}</p>` : ''}
+        <div class="${escapeHtml(layout)}">
+          ${(section.fields || []).map(renderFormBuilderPreviewField).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderFormBuilderPreviewField(field) {
+    const type = field.type || 'text';
+    if (type === 'hidden') {
+      return '';
+    }
+    if (type === 'divider') {
+      return '<hr class="form-builder-preview-divider">';
+    }
+    if (type === 'content') {
+      return `<div class="form-builder-preview-content ${field.layout === 'full' ? 'full' : ''}">${field.html || escapeHtml(field.label || 'Content block')}</div>`;
+    }
+    if (type === 'requestSummary') {
+      return `<div class="form-builder-preview-placeholder ${field.layout === 'full' ? 'full' : ''}">Request summary</div>`;
+    }
+    if (type === 'mealRules') {
+      return `<div class="form-builder-preview-placeholder ${field.layout === 'full' ? 'full' : ''}">Meal break rules</div>`;
+    }
+    if (type === 'hoursWarning') {
+      return `<div class="form-builder-preview-warning ${field.layout === 'full' ? 'full' : ''}">${escapeHtml(field.compareWarningTitle || field.label || 'Hours warning')}</div>`;
+    }
+    const label = field.label || field.name || 'Untitled question';
+    const required = field.required || field.mustBeChecked;
+    const fullClass = field.layout === 'full' || type === 'textarea' || type === 'choiceCards' || type === 'checklistChoice' ? ' full' : '';
+    return `
+      <label class="form-builder-preview-field${fullClass}">
+        <span>${escapeHtml(label)}${required ? ' *' : ''}</span>
+        ${field.help ? `<small>${escapeHtml(field.help)}</small>` : ''}
+        ${renderFormBuilderPreviewControl(field)}
+      </label>
+    `;
+  }
+
+  function renderFormBuilderPreviewControl(field) {
+    const type = field.type || 'text';
+    const options = field.options || [];
+    if (type === 'textarea') {
+      return '<textarea rows="3" disabled></textarea>';
+    }
+    if (type === 'select') {
+      return `<select disabled><option>${escapeHtml(formBuilderOptionLabel(options[0]) || 'Select')}</option></select>`;
+    }
+    if (type === 'radio' || type === 'checklistChoice') {
+      const previewOptions = options.length ? options : ['Yes', 'No'];
+      return `<div class="form-builder-preview-choice-list">${previewOptions.map(option => `<span><input type="radio" disabled> ${escapeHtml(formBuilderOptionLabel(option))}</span>`).join('')}</div>`;
+    }
+    if (type === 'choiceCards') {
+      const previewOptions = options.length ? options : ['Option'];
+      return `<div class="form-builder-preview-choice-cards">${previewOptions.map(option => `<span>${escapeHtml(formBuilderOptionLabel(option))}</span>`).join('')}</div>`;
+    }
+    if (type === 'checkbox') {
+      return '<span class="form-builder-preview-check"><input type="checkbox" disabled> Yes</span>';
+    }
+    const htmlType = ['email', 'date', 'time', 'number'].indexOf(type) !== -1 ? type : 'text';
+    return `<input type="${escapeHtml(htmlType)}" disabled>`;
+  }
+
+  function formBuilderOptionLabel(option) {
+    if (option && typeof option === 'object') {
+      return option.label || option.value || '';
+    }
+    return String(option || '');
+  }
+
+  function formBuilderLayoutOptions(selected) {
+    const options = [
+      { value: '', label: 'Default', description: 'Use the standard section layout.' },
+      { value: 'grid', label: 'grid', description: 'Arrange questions in the normal two-column layout.' },
+      { value: 'grid-three', label: 'grid-three', description: 'Arrange short questions across three compact columns.' },
+      { value: 'stack', label: 'stack', description: 'Place each question on its own full-width row.' }
+    ];
+    return options.map(item => `<option value="${escapeHtml(item.value)}" title="${escapeHtml(item.description)}" ${item.value === selected ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('');
+  }
+
+  function formBuilderFieldLayoutOptions(selected) {
+    const options = [
+      { value: '', label: 'Default', description: 'Use the normal question width for this section layout.' },
+      { value: 'full', label: 'full', description: 'Make this question span the full width of the section.' },
+      { value: 'checklist', label: 'checklist', description: 'Use checklist styling for acknowledgement-style questions.' }
+    ];
+    return options.map(item => `<option value="${escapeHtml(item.value)}" title="${escapeHtml(item.description)}" ${item.value === selected ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('');
+  }
+
+  function formBuilderOptionsText(options) {
+    if (!Array.isArray(options) || !options.length) {
+      return '';
+    }
+    if (options.every(option => typeof option === 'string')) {
+      return options.join('\n');
+    }
+    return JSON.stringify(options, null, 2);
+  }
+
+  function formBuilderExtraJson(field) {
+    const extra = {};
+    const known = formBuilderKnownFieldKeys();
+    Object.keys(field || {}).forEach(key => {
+      if (!known[key]) {
+        extra[key] = field[key];
+      }
+    });
+    return Object.keys(extra).length ? JSON.stringify(extra, null, 2) : '';
+  }
+
+  function formBuilderStageExtraJson(stage) {
+    const extra = {};
+    const known = ['key', 'title', 'description', 'introHtml', 'submitLabel', 'editSubmitLabel', 'adjustmentFields', 'sections'].reduce((map, key) => {
+      map[key] = true;
+      return map;
+    }, {});
+    Object.keys(stage || {}).forEach(key => {
+      if (!known[key]) {
+        extra[key] = stage[key];
+      }
+    });
+    return Object.keys(extra).length ? JSON.stringify(extra, null, 2) : '';
+  }
+
+  function formBuilderKnownFieldKeys() {
+    return ['type', 'name', 'label', 'help', 'layout', 'required', 'mustBeChecked', 'options', 'html', 'hiddenValue', 'defaultValue', 'visibleWhen', 'requiredWhen'].reduce((map, key) => {
+      map[key] = true;
+      return map;
+    }, {});
   }
 
   function renderAdminUserManagement(userManagement) {
@@ -1943,6 +2627,7 @@
     bindAdminProcessNavigation();
     bindDashboardFilter();
     bindAdminUserManagement();
+    bindAdminFormManagement();
     bindAdminWorkflowManagement();
 
     document.querySelectorAll('[data-dashboard-decision]').forEach(button => {
@@ -2061,7 +2746,12 @@
   function bindAdminSubmenu() {
     document.querySelectorAll('[data-admin-view]').forEach(button => {
       button.addEventListener('click', event => {
+        const previousView = dashboardState.adminView;
         dashboardState.adminView = event.currentTarget.dataset.adminView || 'forms';
+        if (dashboardState.adminView === 'builder' && previousView !== 'builder') {
+          dashboardState.formBuilderKey = '';
+          dashboardState.formBuilderStage = '';
+        }
         const body = document.getElementById('dashboard-body');
         if (!body || !dashboardState.data) {
           return;
@@ -2123,6 +2813,182 @@
             bindDashboardActions();
           }
         });
+      });
+    });
+  }
+
+  function bindAdminFormManagement() {
+    document.querySelectorAll('[data-admin-form-management]').forEach(container => {
+      if (container.dataset.formBuilderBound === 'true') {
+        return;
+      }
+      container.dataset.formBuilderBound = 'true';
+
+      container.addEventListener('change', event => {
+        const select = event.target.closest('[data-form-builder-select]');
+        if (select) {
+          dashboardState.formBuilderKey = select.value || '';
+          dashboardState.formBuilderStage = '';
+          rerenderAdminLanding();
+          return;
+        }
+      });
+
+      container.addEventListener('click', event => {
+        const editButton = event.target.closest('[data-edit-form-definition]');
+        if (editButton) {
+          event.preventDefault();
+          dashboardState.formBuilderKey = editButton.dataset.editFormDefinition || '';
+          dashboardState.formBuilderStage = '';
+          rerenderAdminLanding();
+          return;
+        }
+
+        const backButton = event.target.closest('[data-form-builder-back]');
+        if (backButton) {
+          event.preventDefault();
+          dashboardState.formBuilderKey = '';
+          dashboardState.formBuilderStage = '';
+          rerenderAdminLanding();
+          return;
+        }
+
+        const saveButton = event.target.closest('[data-save-form-builder]');
+        if (saveButton) {
+          event.preventDefault();
+          const form = container.querySelector('[data-admin-form-builder-form]');
+          if (form) {
+            form.requestSubmit();
+          }
+          return;
+        }
+
+        const createButton = event.target.closest('[data-create-form-definition]');
+        if (createButton) {
+          event.preventDefault();
+          createLocalFormDefinition(createButton.closest('[data-admin-form-management]'));
+          return;
+        }
+
+        const stageTab = event.target.closest('[data-form-stage-tab]');
+        if (stageTab) {
+          event.preventDefault();
+          setFormBuilderStage(stageTab.closest('[data-admin-form-builder-form]'), stageTab.dataset.formStageTab || '');
+          return;
+        }
+
+        const addStageButton = event.target.closest('[data-add-form-stage]');
+        if (addStageButton) {
+          event.preventDefault();
+          addFormBuilderStage(addStageButton.closest('[data-admin-form-builder-form]'));
+          return;
+        }
+
+        const removeStageButton = event.target.closest('[data-remove-form-stage]');
+        if (removeStageButton) {
+          event.preventDefault();
+          removeFormBuilderStage(removeStageButton.closest('[data-form-stage-panel]'));
+          return;
+        }
+
+        const addSectionButton = event.target.closest('[data-add-form-section]');
+        if (addSectionButton) {
+          event.preventDefault();
+          addFormBuilderSection(addSectionButton.closest('[data-form-stage-panel]'));
+          return;
+        }
+
+        const removeSectionButton = event.target.closest('[data-remove-form-section]');
+        if (removeSectionButton) {
+          event.preventDefault();
+          const section = removeSectionButton.closest('[data-form-section]');
+          const form = removeSectionButton.closest('[data-admin-form-builder-form]');
+          const list = section ? section.closest('[data-form-section-list]') : null;
+          if (section) {
+            section.remove();
+          }
+          updateFormBuilderSectionListState(list);
+          updateFormBuilderPreview(form);
+          return;
+        }
+
+        const moveSectionButton = event.target.closest('[data-move-form-section]');
+        if (moveSectionButton) {
+          event.preventDefault();
+          const form = moveSectionButton.closest('[data-admin-form-builder-form]');
+          moveFormBuilderItem(moveSectionButton.closest('[data-form-section]'), moveSectionButton.dataset.moveFormSection, '[data-form-section]');
+          updateFormBuilderSectionListState(moveSectionButton.closest('[data-form-section-list]'));
+          updateFormBuilderPreview(form);
+          return;
+        }
+
+        const addFieldButton = event.target.closest('[data-add-form-field]');
+        if (addFieldButton) {
+          event.preventDefault();
+          addFormBuilderField(addFieldButton.closest('[data-form-section]'));
+          return;
+        }
+
+        const removeFieldButton = event.target.closest('[data-remove-form-field]');
+        if (removeFieldButton) {
+          event.preventDefault();
+          const field = removeFieldButton.closest('[data-form-field]');
+          const form = removeFieldButton.closest('[data-admin-form-builder-form]');
+          const list = field ? field.closest('[data-form-field-list]') : null;
+          if (field) {
+            field.remove();
+          }
+          updateFormBuilderFieldListState(list);
+          updateFormBuilderPreview(form);
+          return;
+        }
+
+        const moveFieldButton = event.target.closest('[data-move-form-field]');
+        if (moveFieldButton) {
+          event.preventDefault();
+          const form = moveFieldButton.closest('[data-admin-form-builder-form]');
+          moveFormBuilderItem(moveFieldButton.closest('[data-form-field]'), moveFieldButton.dataset.moveFormField, '[data-form-field]');
+          updateFormBuilderFieldListState(moveFieldButton.closest('[data-form-field-list]'));
+          updateFormBuilderPreview(form);
+        }
+      });
+
+      container.querySelectorAll('[data-admin-form-builder-form]').forEach(form => {
+        form.addEventListener('input', () => {
+          updateFormBuilderPreview(form);
+        });
+
+        form.addEventListener('change', event => {
+          const typeSelect = event.target.closest('[data-field-prop="type"]');
+          if (typeSelect) {
+            updateFormBuilderFieldVisibility(typeSelect.closest('[data-form-field]'));
+          }
+          updateFormBuilderPreview(form);
+        });
+
+        form.addEventListener('submit', event => {
+          event.preventDefault();
+          let data;
+          try {
+            data = collectAdminFormSettings(form);
+          } catch (error) {
+            showNotice(error && error.message ? error.message : 'Form definition could not be collected.', 'error');
+            return;
+          }
+          submitWithContainer(form, 'updateAdminFormSettings', data, result => {
+            showNotice(result.message || 'Form definition has been updated.', 'success');
+            if (dashboardState.data) {
+              dashboardState.data.formManagement = result.formManagement || dashboardState.data.formManagement;
+              dashboardState.data.roleAvailability = result.roleAvailability || dashboardState.data.roleAvailability;
+            }
+            dashboardState.roleAvailability = normalizeRoleAvailability(result.roleAvailability || dashboardState.roleAvailability);
+            dashboardState.formBuilderKey = result.definitionKey || data.definitionKey;
+            applyTopNavRoleVisibility();
+            rerenderAdminLanding();
+          });
+        });
+
+        form.querySelectorAll('[data-form-field]').forEach(updateFormBuilderFieldVisibility);
       });
     });
   }
@@ -2314,6 +3180,438 @@
     body.innerHTML = renderDashboardData(dashboardState.data);
     bindDashboardActions();
     updateAdminViewUrl();
+  }
+
+  function createLocalFormDefinition(container) {
+    const keyInput = container ? container.querySelector('[data-new-form-key]') : null;
+    const nameInput = container ? container.querySelector('[data-new-form-name]') : null;
+    const key = normalize(keyInput ? keyInput.value : '').replace(/\s+/g, '_');
+    const name = nameInput && nameInput.value.trim() ? nameInput.value.trim() : key;
+    if (!/^[a-z][a-z0-9_-]*$/.test(key)) {
+      showNotice('Form key must start with a letter and contain only lowercase letters, numbers, hyphens, or underscores.', 'error');
+      if (keyInput) {
+        keyInput.focus();
+      }
+      return;
+    }
+    const management = dashboardState.data && dashboardState.data.formManagement;
+    if (!management) {
+      return;
+    }
+    if ((management.forms || []).some(form => form.key === key)) {
+      showNotice(`Form ${key} already exists.`, 'error');
+      return;
+    }
+    management.forms = (management.forms || []).concat([{
+      key,
+      name,
+      description: '',
+      processUsage: [],
+      definition: {
+        name,
+        forms: {
+          request: {
+            key,
+            sections: []
+          }
+        }
+      }
+    }]).sort((a, b) => String(a.name || a.key).localeCompare(String(b.name || b.key)));
+    dashboardState.formBuilderKey = key;
+    dashboardState.formBuilderStage = 'request';
+    rerenderAdminLanding();
+  }
+
+  function setFormBuilderStage(form, stage) {
+    if (!form || !stage) {
+      return;
+    }
+    dashboardState.formBuilderStage = stage;
+    form.querySelectorAll('[data-form-stage-tab]').forEach(button => {
+      const active = button.dataset.formStageTab === stage;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    form.querySelectorAll('[data-form-stage-panel]').forEach(panel => {
+      panel.hidden = panel.dataset.formStage !== stage;
+    });
+    updateFormBuilderPreview(form);
+  }
+
+  function addFormBuilderStage(form) {
+    if (!form) {
+      return;
+    }
+    const existing = Array.from(form.querySelectorAll('[data-form-stage-panel]')).map(panel => panel.dataset.formStage);
+    const keyInput = form.querySelector('[data-new-form-stage-key]');
+    const titleInput = form.querySelector('[data-new-form-stage-title]');
+    const key = normalize(keyInput ? keyInput.value : '').replace(/\s+/g, '_');
+    const management = dashboardState.data && dashboardState.data.formManagement;
+    const stageTypes = management ? management.stageTypes || [] : [];
+    const stageType = formBuilderStageType(key, stageTypes);
+    if (!key || !/^[a-z][a-z0-9_-]*$/.test(key)) {
+      showNotice('Choose a stage type to add.', 'error');
+      if (keyInput) {
+        keyInput.focus();
+      }
+      return;
+    }
+    if (existing.indexOf(key) !== -1) {
+      showNotice(`Stage ${key} already exists.`, 'error');
+      return;
+    }
+    const title = titleInput && titleInput.value.trim() ? titleInput.value.trim() : '';
+    const fieldTypes = management ? management.fieldTypes || [] : [];
+    const tabs = form.querySelector('.workflow-stage-tabs');
+    const panels = form.querySelector('.form-builder-stage-panels');
+    const stageModel = {
+      key,
+      label: formBuilderStageLabel(key, stageTypes),
+      triggerSummary: stageType ? stageType.triggerSummary || '' : '',
+      definition: {
+        key: `${form.dataset.definitionKey}.${key}`,
+        title,
+        sections: []
+      }
+    };
+    if (tabs) {
+      tabs.insertAdjacentHTML('beforeend', `
+        <button class="button secondary" type="button" role="tab" data-form-stage-tab="${escapeHtml(key)}" aria-selected="false">${escapeHtml(stageModel.label)}</button>
+      `);
+    }
+    if (panels) {
+      panels.insertAdjacentHTML('beforeend', renderFormBuilderStagePanel(stageModel, '', fieldTypes));
+    }
+    if (keyInput) {
+      keyInput.value = '';
+    }
+    if (titleInput) {
+      titleInput.value = '';
+    }
+    setFormBuilderStage(form, key);
+    updateFormBuilderPreview(form);
+  }
+
+  function removeFormBuilderStage(panel) {
+    if (!panel) {
+      return;
+    }
+    const form = panel.closest('[data-admin-form-builder-form]');
+    const stage = panel.dataset.formStage || '';
+    if (!form || !stage) {
+      return;
+    }
+    if (stage === 'request') {
+      showNotice('The request form stage is required and cannot be removed.', 'error');
+      return;
+    }
+    const tab = Array.from(form.querySelectorAll('[data-form-stage-tab]'))
+      .find(button => button.dataset.formStageTab === stage);
+    if (tab) {
+      tab.remove();
+    }
+    panel.remove();
+    const nextPanel = form.querySelector('[data-form-stage-panel]');
+    if (nextPanel) {
+      setFormBuilderStage(form, nextPanel.dataset.formStage || 'request');
+    } else {
+      dashboardState.formBuilderStage = '';
+      updateFormBuilderPreview(form);
+    }
+  }
+
+  function addFormBuilderSection(panel) {
+    const list = panel ? panel.querySelector('[data-form-section-list]') : null;
+    if (!list) {
+      return;
+    }
+    const management = dashboardState.data && dashboardState.data.formManagement;
+    const fieldTypes = management ? management.fieldTypes || [] : [];
+    const section = {
+      title: 'New section',
+      layout: 'grid',
+      fields: []
+    };
+    const index = list.querySelectorAll('[data-form-section]').length;
+    const empty = list.querySelector('[data-form-section-empty]');
+    if (empty) {
+      empty.insertAdjacentHTML('beforebegin', renderFormBuilderSection(section, index, fieldTypes));
+    } else {
+      list.insertAdjacentHTML('beforeend', renderFormBuilderSection(section, index, fieldTypes));
+    }
+    updateFormBuilderSectionListState(list);
+    updateFormBuilderPreview(panel.closest('[data-admin-form-builder-form]'));
+  }
+
+  function addFormBuilderField(section) {
+    const list = section ? section.querySelector('[data-form-field-list]') : null;
+    if (!list) {
+      return;
+    }
+    const management = dashboardState.data && dashboardState.data.formManagement;
+    const fieldTypes = management ? management.fieldTypes || [] : [];
+    const field = {
+      type: 'text',
+      name: 'newField',
+      label: 'New question'
+    };
+    const index = list.querySelectorAll('[data-form-field]').length;
+    const empty = list.querySelector('[data-form-field-empty]');
+    if (empty) {
+      empty.insertAdjacentHTML('beforebegin', renderFormBuilderField(field, index, fieldTypes));
+    } else {
+      list.insertAdjacentHTML('beforeend', renderFormBuilderField(field, index, fieldTypes));
+    }
+    updateFormBuilderFieldListState(list);
+    updateFormBuilderPreview(section.closest('[data-admin-form-builder-form]'));
+  }
+
+  function moveFormBuilderItem(item, direction, selector) {
+    if (!item) {
+      return;
+    }
+    const target = direction === 'up'
+      ? previousMatchingElement(item, selector)
+      : nextMatchingElement(item, selector);
+    if (!target) {
+      return;
+    }
+    if (direction === 'up') {
+      item.parentNode.insertBefore(item, target);
+    } else {
+      item.parentNode.insertBefore(target, item);
+    }
+  }
+
+  function previousMatchingElement(element, selector) {
+    let current = element ? element.previousElementSibling : null;
+    while (current && !current.matches(selector)) {
+      current = current.previousElementSibling;
+    }
+    return current;
+  }
+
+  function nextMatchingElement(element, selector) {
+    let current = element ? element.nextElementSibling : null;
+    while (current && !current.matches(selector)) {
+      current = current.nextElementSibling;
+    }
+    return current;
+  }
+
+  function updateFormBuilderSectionListState(list) {
+    if (!list) {
+      return;
+    }
+    const sections = Array.from(list.querySelectorAll('[data-form-section]'));
+    sections.forEach((section, index) => {
+      const order = section.querySelector('[data-section-order]');
+      if (order) {
+        order.textContent = String(index + 1);
+      }
+      updateFormBuilderFieldListState(section.querySelector('[data-form-field-list]'));
+    });
+    const empty = list.querySelector('[data-form-section-empty]');
+    if (empty) {
+      empty.hidden = sections.length > 0;
+    }
+  }
+
+  function updateFormBuilderFieldListState(list) {
+    if (!list) {
+      return;
+    }
+    const fields = Array.from(list.querySelectorAll('[data-form-field]'));
+    fields.forEach((field, index) => {
+      const order = field.querySelector('[data-field-order]');
+      if (order) {
+        order.textContent = String(index + 1);
+      }
+    });
+    const empty = list.querySelector('[data-form-field-empty]');
+    if (empty) {
+      empty.hidden = fields.length > 0;
+    }
+  }
+
+  function updateFormBuilderPreview(form) {
+    if (!form) {
+      return;
+    }
+    const container = form.closest('[data-admin-form-management]');
+    const preview = container ? container.querySelector('[data-form-builder-preview]') : null;
+    if (!preview) {
+      return;
+    }
+    let data;
+    try {
+      data = collectAdminFormSettings(form, { silentJson: true });
+    } catch (error) {
+      return;
+    }
+    const management = dashboardState.data && dashboardState.data.formManagement;
+    const next = renderFormBuilderPreview(data.definition, dashboardState.formBuilderStage || 'request', management ? management.stageTypes || [] : []);
+    preview.outerHTML = next;
+  }
+
+  function updateFormBuilderFieldVisibility(field) {
+    if (!field) {
+      return;
+    }
+    const type = formBuilderFieldValue(field, 'field-prop', 'type') || 'text';
+    const optionsPanel = field.querySelector('[data-form-field-options-panel]');
+    const contentPanel = field.querySelector('[data-form-field-content-panel]');
+    if (optionsPanel) {
+      optionsPanel.hidden = !formBuilderFieldSupportsOptions(type);
+    }
+    if (contentPanel) {
+      contentPanel.hidden = !formBuilderFieldSupportsContent(type);
+    }
+  }
+
+  function collectAdminFormSettings(form, options) {
+    const definition = {
+      name: formBuilderFieldValue(form, 'definition', 'name'),
+      description: formBuilderFieldValue(form, 'definition', 'description'),
+      forms: {}
+    };
+    form.querySelectorAll('[data-form-stage-panel]').forEach(panel => {
+      const stage = panel.dataset.formStage;
+      definition.forms[stage] = collectFormBuilderStage(panel, form.dataset.definitionKey, stage, options || {});
+    });
+    return {
+      email: dashboardState.email,
+      definitionKey: form.dataset.definitionKey,
+      definition
+    };
+  }
+
+  function collectFormBuilderStage(panel, definitionKey, stage, options) {
+    const extra = parseOptionalJsonField(panel.querySelector('[data-stage-extra-json]'), 'Additional stage properties', options || {});
+    return compactObject(Object.assign({}, extra || {}, {
+      key: formBuilderFieldValue(panel, 'stage', 'key') || (stage === 'request' ? definitionKey : `${definitionKey}.${stage}`),
+      title: formBuilderFieldValue(panel, 'stage', 'title'),
+      description: formBuilderFieldValue(panel, 'stage', 'description'),
+      introHtml: formBuilderFieldValue(panel, 'stage', 'introHtml'),
+      submitLabel: formBuilderFieldValue(panel, 'stage', 'submitLabel'),
+      editSubmitLabel: formBuilderFieldValue(panel, 'stage', 'editSubmitLabel'),
+      adjustmentFields: splitWorkflowFieldList(formBuilderFieldValue(panel, 'stage', 'adjustmentFields')),
+      sections: Array.from(panel.querySelectorAll('[data-form-section]')).map(section => collectFormBuilderSection(section, options || {}))
+    }));
+  }
+
+  function collectFormBuilderSection(section, options) {
+    return compactObject({
+      title: formBuilderFieldValue(section, 'section', 'title'),
+      description: formBuilderFieldValue(section, 'section', 'description'),
+      editTitle: formBuilderFieldValue(section, 'section', 'editTitle'),
+      editDescription: formBuilderFieldValue(section, 'section', 'editDescription'),
+      layout: formBuilderFieldValue(section, 'section', 'layout'),
+      fields: Array.from(section.querySelectorAll('[data-form-field]')).map(field => collectFormBuilderField(field, options || {}))
+    });
+  }
+
+  function collectFormBuilderField(fieldElement, options) {
+    const extra = parseOptionalJsonField(fieldElement.querySelector('[data-field-extra-json]'), 'Additional properties', options || {});
+    const field = Object.assign({}, extra || {});
+    const type = formBuilderFieldValue(fieldElement, 'field-prop', 'type') || 'text';
+    field.type = type;
+    setIfPresent(field, 'name', formBuilderFieldValue(fieldElement, 'field-prop', 'name'));
+    setIfPresent(field, 'label', formBuilderFieldValue(fieldElement, 'field-prop', 'label'));
+    setIfPresent(field, 'help', formBuilderFieldValue(fieldElement, 'field-prop', 'help'));
+    setIfPresent(field, 'layout', formBuilderFieldValue(fieldElement, 'field-prop', 'layout'));
+    setIfPresent(field, 'html', formBuilderFieldValue(fieldElement, 'field-prop', 'html'));
+    setIfPresent(field, 'hiddenValue', formBuilderFieldValue(fieldElement, 'field-prop', 'hiddenValue'));
+    setIfPresent(field, 'defaultValue', formBuilderFieldValue(fieldElement, 'field-prop', 'defaultValue'));
+    if (formBuilderFieldChecked(fieldElement, 'required')) {
+      field.required = true;
+    } else {
+      delete field.required;
+    }
+    if (formBuilderFieldChecked(fieldElement, 'mustBeChecked')) {
+      field.mustBeChecked = true;
+    } else {
+      delete field.mustBeChecked;
+    }
+    const parsedOptions = parseFormBuilderOptions(formBuilderFieldValue(fieldElement, 'field-prop', 'options'));
+    if (parsedOptions.length) {
+      field.options = parsedOptions;
+    } else {
+      delete field.options;
+    }
+    const visibleWhen = parseOptionalJsonField(fieldElement.querySelector('[data-field-prop="visibleWhen"]'), 'Visible when', options || {});
+    const requiredWhen = parseOptionalJsonField(fieldElement.querySelector('[data-field-prop="requiredWhen"]'), 'Required when', options || {});
+    if (visibleWhen) {
+      field.visibleWhen = visibleWhen;
+    } else {
+      delete field.visibleWhen;
+    }
+    if (requiredWhen) {
+      field.requiredWhen = requiredWhen;
+    } else {
+      delete field.requiredWhen;
+    }
+    return compactObject(field);
+  }
+
+  function formBuilderFieldValue(root, scope, name) {
+    const input = root ? root.querySelector(`[data-${scope}-field="${name}"], [data-${scope}="${name}"]`) : null;
+    return input ? String(input.value || '').trim() : '';
+  }
+
+  function formBuilderFieldChecked(root, name) {
+    const input = root ? root.querySelector(`[data-field-prop="${name}"]`) : null;
+    return Boolean(input && input.checked);
+  }
+
+  function parseFormBuilderOptions(value) {
+    const text = String(value || '').trim();
+    if (!text) {
+      return [];
+    }
+    if (text[0] === '[') {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    return text.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  }
+
+  function parseOptionalJsonField(input, label, options) {
+    const text = input ? String(input.value || '').trim() : '';
+    if (!text) {
+      return null;
+    }
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      if (options && options.silentJson) {
+        return null;
+      }
+      if (input) {
+        input.setCustomValidity(`${label} must be valid JSON.`);
+        input.reportValidity();
+        input.addEventListener('input', () => input.setCustomValidity(''), { once: true });
+      }
+      throw error;
+    }
+  }
+
+  function setIfPresent(target, key, value) {
+    if (value !== undefined && value !== null && value !== '') {
+      target[key] = value;
+    } else {
+      delete target[key];
+    }
+  }
+
+  function compactObject(value) {
+    Object.keys(value).forEach(key => {
+      const entry = value[key];
+      if (entry === '' || entry === undefined || entry === null || (Array.isArray(entry) && !entry.length)) {
+        delete value[key];
+      }
+    });
+    return value;
   }
 
   function setWorkflowStage(form, stage) {
@@ -2854,6 +4152,14 @@
     const params = { role: 'admin' };
     if (dashboardState.adminView !== 'forms') {
       params.adminView = dashboardState.adminView;
+    }
+    if (dashboardState.adminView === 'builder') {
+      if (dashboardState.formBuilderKey) {
+        params.formKey = dashboardState.formBuilderKey;
+      }
+      if (dashboardState.formBuilderStage) {
+        params.formStage = dashboardState.formBuilderStage;
+      }
     }
     window.history.replaceState(null, '', appUrl('dashboard', params));
   }
@@ -4001,6 +5307,8 @@
       adminCancelRequest: 'Cancelling request...',
       adminSendReminder: 'Sending reminder...',
       adminReassignRequest: 'Reassigning step...',
+      getAdminFormManagementData: 'Loading form builder...',
+      updateAdminFormSettings: 'Saving form definition...',
       getAdminWorkflowManagementData: 'Loading approval flows...',
       updateAdminWorkflowSettings: 'Saving workflow...'
     };

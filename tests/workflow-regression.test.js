@@ -2380,6 +2380,127 @@ test('global admins can manage process workflow steps from the admin dashboard',
   );
 });
 
+test('global admins can create and edit database-backed form definitions from the admin dashboard', () => {
+  const harness = createAppsScriptHarness({ activeEmail: 'admin@example.edu' });
+  const plain = value => JSON.parse(JSON.stringify(value));
+
+  const chooser = harness.api.getDashboardData({ role: 'admin' });
+  assert.equal(chooser.canManageUsers, true);
+  assert.ok(chooser.formManagement.forms.some(form => form.key === 'overtime'));
+
+  const management = harness.api.getAdminFormManagementData({ email: 'admin@example.edu' });
+  assert.ok(management.formManagement.fieldTypes.some(fieldType => fieldType.value === 'checklistChoice'));
+  assert.deepEqual(
+    plain(management.formManagement.stageTypes.map(stage => stage.key)),
+    ['request', 'actual', 'checklist']
+  );
+  assert.ok(management.formManagement.forms.some(form => form.key === 'vtr'));
+  assert.ok(
+    management.formManagement.forms
+      .find(form => form.key === 'overtime')
+      .processUsage.some(process => process.key === 'overtime')
+  );
+
+  const result = harness.api.updateAdminFormSettings({
+    email: 'admin@example.edu',
+    definitionKey: 'test_form_builder',
+    definition: {
+      name: 'Test Form Builder',
+      description: 'Created through the admin form builder',
+      forms: {
+        request: {
+          key: 'test_form_builder',
+          title: 'Test request',
+          submitLabel: 'Submit test request',
+          adjustmentFields: 'employeeName, category, employeeName',
+          sections: [
+            {
+              title: 'Requester details',
+              description: 'Core details for this request.',
+              layout: 'grid',
+              fields: [
+                {
+                  type: 'content',
+                  html: '<p>Use this form for regression coverage.</p>'
+                },
+                {
+                  type: 'text',
+                  name: 'employeeName',
+                  label: 'Employee name',
+                  required: true
+                },
+                {
+                  type: 'select',
+                  name: 'category',
+                  label: 'Category',
+                  options: ['A', { value: 'B', label: 'Category B' }],
+                  visibleWhen: { field: 'employeeName', exists: true },
+                  requiredWhen: { field: 'employeeName', exists: true }
+                }
+              ]
+            }
+          ]
+        },
+        checklist: {
+          key: 'test_form_builder.checklist',
+          title: 'Completion checklist',
+          sections: [
+            {
+              title: 'Checks',
+              fields: [
+                {
+                  type: 'checklistChoice',
+                  name: 'complete',
+                  label: 'Complete?',
+                  options: ['Yes', 'No', 'N/A'],
+                  mustBeChecked: false
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.definitionKey, 'test_form_builder');
+  assert.ok(result.formManagement.forms.some(form => form.key === 'test_form_builder'));
+
+  const definition = harness.api.FORM_DEFINITIONS.test_form_builder;
+  assert.equal(definition.name, 'Test Form Builder');
+  assert.equal(definition.forms.request.sections[0].fields[0].type, 'content');
+  assert.equal(Object.prototype.hasOwnProperty.call(definition.forms.request.sections[0].fields[0], 'name'), false);
+  assert.equal(definition.forms.request.sections[0].fields[1].required, true);
+  assert.deepEqual(
+    plain(definition.forms.request.sections[0].fields[2].options[1]),
+    { value: 'B', label: 'Category B' }
+  );
+  assert.deepEqual(
+    plain(definition.forms.request.sections[0].fields[2].visibleWhen),
+    { field: 'employeeName', exists: true }
+  );
+  assert.deepEqual(plain(definition.forms.request.adjustmentFields), ['employeeName', 'category']);
+  assert.equal(definition.forms.checklist.sections[0].fields[0].type, 'checklistChoice');
+
+  assert.throws(
+    () => harness.api.updateAdminFormSettings({
+      email: 'admin@example.edu',
+      definitionKey: 'Bad Key',
+      definition: { forms: { request: { sections: [] } } }
+    }),
+    /Form key must start/
+  );
+  assert.throws(
+    () => harness.api.updateAdminFormSettings({
+      email: 'admin@example.edu',
+      definitionKey: 'missing_field_name',
+      definition: { forms: { request: { sections: [{ fields: [{ type: 'text', label: 'No name' }] }] } } }
+    }),
+    /Field 1 name is required/
+  );
+});
+
 test('process admins cannot access global workflow management', () => {
   const harness = createAppsScriptHarness({ activeEmail: 'admin@example.edu' });
   harness.api.setup();
@@ -2390,8 +2511,13 @@ test('process admins cannot access global workflow management', () => {
   const chooser = harness.api.getDashboardData({ role: 'admin' });
   assert.equal(chooser.canManageUsers, false);
   assert.equal(chooser.workflowManagement, null);
+  assert.equal(chooser.formManagement, null);
   assert.throws(
     () => harness.api.getAdminWorkflowManagementData({ email: 'overtimeadmin@example.edu' }),
+    /not configured as a global admin/
+  );
+  assert.throws(
+    () => harness.api.getAdminFormManagementData({ email: 'overtimeadmin@example.edu' }),
     /not configured as a global admin/
   );
   assert.throws(

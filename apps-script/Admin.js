@@ -208,6 +208,12 @@ function getAdminWorkflowManagementData(payload) {
   return adminWorkflowManagementResponse_(adminEmail, '');
 }
 
+function getAdminFormManagementData(payload) {
+  ensureReady_();
+  const adminEmail = requireGlobalAdminEmail_(payload || {});
+  return adminFormManagementResponse_(adminEmail, '');
+}
+
 function updateAdminWorkflowSettings(payload) {
   ensureReady_();
   const lock = LockService.getScriptLock();
@@ -218,6 +224,21 @@ function updateAdminWorkflowSettings(payload) {
     const settings = normalizeAdminWorkflowSettingsPayload_(payload || {});
     saveAdminWorkflowSettings_(settings);
     return adminWorkflowManagementResponse_(adminEmail, 'Workflow configuration has been updated.', settings.processKey);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function updateAdminFormSettings(payload) {
+  ensureReady_();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const adminEmail = requireGlobalAdminEmail_(payload || {});
+    const settings = normalizeAdminFormSettingsPayload_(payload || {});
+    saveAdminFormSettings_(settings);
+    return adminFormManagementResponse_(adminEmail, 'Form definition has been updated.', settings.definitionKey);
   } finally {
     lock.releaseLock();
   }
@@ -258,6 +279,97 @@ function adminWorkflowManagementResponse_(adminEmail, message, processKey) {
     roleAvailability: dashboardRoleAvailabilityFor_(adminEmail),
     workflowManagement: adminWorkflowManagementData_()
   };
+}
+
+function adminFormManagementResponse_(adminEmail, message, definitionKey) {
+  return {
+    ok: true,
+    email: adminEmail,
+    message,
+    definitionKey: definitionKey || '',
+    roleAvailability: dashboardRoleAvailabilityFor_(adminEmail),
+    formManagement: adminFormManagementData_()
+  };
+}
+
+function adminFormManagementData_() {
+  const processes = getProcessDefinitions_();
+  const usages = {};
+  Object.keys(processes).forEach(function (processKey) {
+    const process = processes[processKey] || {};
+    const formKey = trim_(process.requestForm || process.key);
+    if (!formKey) {
+      return;
+    }
+    usages[formKey] = usages[formKey] || [];
+    usages[formKey].push({
+      key: process.key || processKey,
+      name: process.name || processKey
+    });
+  });
+
+  return {
+    fieldTypes: adminFormFieldTypes_(),
+    stageTypes: adminFormStageTypes_(),
+    forms: Object.keys(FORM_DEFINITIONS)
+      .map(function (definitionKey) {
+        const definition = cloneObject_(FORM_DEFINITIONS[definitionKey] || {});
+        return {
+          key: definitionKey,
+          name: trim_(definition.name) || definitionKey,
+          description: trim_(definition.description),
+          processUsage: usages[definitionKey] || [],
+          definition
+        };
+      })
+      .sort(function (a, b) {
+        return String(a.name || a.key).localeCompare(String(b.name || b.key));
+      })
+  };
+}
+
+function adminFormFieldTypes_() {
+  return [
+    { value: 'text', label: 'Text', description: 'Single-line free text answer.' },
+    { value: 'email', label: 'Email', description: 'Email address answer with email-friendly browser input.' },
+    { value: 'textarea', label: 'Long text', description: 'Multi-line free text answer for longer responses.' },
+    { value: 'date', label: 'Date', description: 'Calendar date answer.' },
+    { value: 'time', label: 'Time', description: 'Time answer using the app time picker.' },
+    { value: 'number', label: 'Number', description: 'Numeric answer.' },
+    { value: 'radio', label: 'Radio choices', description: 'One choice from a short visible list.' },
+    { value: 'select', label: 'Dropdown', description: 'One choice from a compact dropdown menu.' },
+    { value: 'checkbox', label: 'Checkbox', description: 'Single yes or no tick box. Use Must be checked for acknowledgements.' },
+    { value: 'choiceCards', label: 'Choice cards', description: 'One choice shown as larger selectable cards.' },
+    { value: 'checklistChoice', label: 'Checklist choice', description: 'Checklist-style choice group used for final checklist questions.' },
+    { value: 'content', label: 'Content block', description: 'Display-only rich text that does not collect an answer.' },
+    { value: 'divider', label: 'Divider', description: 'Visual separator between groups of questions.' },
+    { value: 'requestSummary', label: 'Request summary', description: 'Display-only summary of answers from an earlier request stage.' },
+    { value: 'mealRules', label: 'Meal rules', description: 'Overtime-specific calculated meal allowance guidance.' },
+    { value: 'hoursWarning', label: 'Hours warning', description: 'Overtime-specific warning based on entered hours.' }
+  ];
+}
+
+function adminFormStageTypes_() {
+  return [
+    {
+      key: 'request',
+      label: 'Request form',
+      required: true,
+      triggerSummary: 'Available when a requester starts a new request.'
+    },
+    {
+      key: 'actual',
+      label: 'Actual hours',
+      required: false,
+      triggerSummary: 'Available when an actual-hours process asks the requester to confirm final hours.'
+    },
+    {
+      key: 'checklist',
+      label: 'Checklist',
+      required: false,
+      triggerSummary: 'Available when a process starts a checklist follow-up.'
+    }
+  ];
 }
 
 function adminWorkflowManagementData_() {
@@ -568,6 +680,191 @@ function normalizeAdminWorkflowSettingsPayload_(payload) {
   };
 }
 
+function normalizeAdminFormSettingsPayload_(payload) {
+  const definitionKey = normalizeDefinitionKey_(requireText_(payload.definitionKey, 'Form key'));
+  const definition = normalizeAdminFormDefinition_(payload.definition || {}, definitionKey);
+  return {
+    definitionKey,
+    definition
+  };
+}
+
+function normalizeDefinitionKey_(value) {
+  const key = trim_(value).toLowerCase();
+  if (!/^[a-z][a-z0-9_-]*$/.test(key)) {
+    throw new Error('Form key must start with a letter and contain only lowercase letters, numbers, hyphens, or underscores.');
+  }
+  return key;
+}
+
+function normalizeAdminFormDefinition_(definition, definitionKey) {
+  if (!definition || typeof definition !== 'object' || Array.isArray(definition)) {
+    throw new Error('Form definition must be an object.');
+  }
+
+  const forms = definition.forms || {};
+  if (!forms || typeof forms !== 'object' || Array.isArray(forms)) {
+    throw new Error('Form definition must include form stages.');
+  }
+
+  const normalized = cloneObject_(definition);
+  normalized.forms = {};
+  const name = trim_(definition.name);
+  const description = trim_(definition.description);
+  if (name) {
+    normalized.name = name;
+  } else {
+    delete normalized.name;
+  }
+  if (description) {
+    normalized.description = description;
+  } else {
+    delete normalized.description;
+  }
+
+  Object.keys(forms).forEach(function (stageKey) {
+    const stage = normalizeWorkflowStageKey_(stageKey);
+    normalized.forms[stage] = normalizeAdminFormStage_(forms[stage] || {}, stage, definitionKey);
+  });
+
+  if (!Object.keys(normalized.forms).length) {
+    normalized.forms.request = normalizeAdminFormStage_({ key: definitionKey, sections: [] }, 'request', definitionKey);
+  }
+  if (!normalized.forms.request) {
+    throw new Error('A request form stage is required.');
+  }
+
+  return normalized;
+}
+
+function normalizeAdminFormStage_(stage, stageKey, definitionKey) {
+  if (!stage || typeof stage !== 'object' || Array.isArray(stage)) {
+    throw new Error(`Form stage "${stageKey}" must be an object.`);
+  }
+  const normalized = cloneObject_(stage);
+  normalized.key = trim_(stage.key) || (stageKey === 'request' ? definitionKey : `${definitionKey}.${stageKey}`);
+  normalized.sections = [].concat(stage.sections || []).map(function (section, sectionIndex) {
+    return normalizeAdminFormSection_(section || {}, stageKey, sectionIndex);
+  });
+  normalized.adjustmentFields = normalizeAdminFormFieldList_(stage.adjustmentFields);
+  ['title', 'description', 'introHtml', 'submitLabel', 'editSubmitLabel'].forEach(function (key) {
+    const value = trim_(stage[key]);
+    if (value) {
+      normalized[key] = value;
+    } else {
+      delete normalized[key];
+    }
+  });
+  return normalized;
+}
+
+function normalizeAdminFormSection_(section, stageKey, sectionIndex) {
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    throw new Error(`Section ${sectionIndex + 1} in ${stageKey} must be an object.`);
+  }
+  const normalized = cloneObject_(section);
+  normalized.fields = [].concat(section.fields || []).map(function (field, fieldIndex) {
+    return normalizeAdminFormField_(field || {}, stageKey, sectionIndex, fieldIndex);
+  });
+  ['title', 'description', 'editTitle', 'editDescription', 'layout'].forEach(function (key) {
+    const value = trim_(section[key]);
+    if (value) {
+      normalized[key] = value;
+    } else {
+      delete normalized[key];
+    }
+  });
+  return normalized;
+}
+
+function normalizeAdminFormField_(field, stageKey, sectionIndex, fieldIndex) {
+  if (!field || typeof field !== 'object' || Array.isArray(field)) {
+    throw new Error(`Field ${fieldIndex + 1} in ${stageKey} section ${sectionIndex + 1} must be an object.`);
+  }
+  const normalized = cloneObject_(field);
+  const type = trim_(field.type || 'text');
+  const allowedTypes = adminFormFieldTypes_().map(function (item) { return item.value; });
+  if (allowedTypes.indexOf(type) === -1) {
+    throw new Error(`Unsupported form field type "${type}".`);
+  }
+  normalized.type = type;
+  if (adminFormFieldRequiresName_(type)) {
+    normalized.name = normalizeWorkflowFieldName_(field.name, `Field ${fieldIndex + 1} name`, true);
+  } else if (trim_(field.name)) {
+    normalized.name = normalizeWorkflowFieldName_(field.name, `Field ${fieldIndex + 1} name`, false);
+  } else {
+    delete normalized.name;
+  }
+
+  ['label', 'help', 'layout', 'html', 'htmlType', 'hiddenValue', 'defaultValue', 'defaultFrom', 'defaultFromField', 'validation', 'validationLabel', 'errorMessage', 'pattern', 'inputMode', 'autocomplete', 'spellcheck', 'autocapitalize', 'className', 'kind', 'modeField', 'hoursField', 'startField', 'finishField', 'compareModeValue', 'compareStartField', 'compareFinishField', 'compareWarningTitle', 'compareWorkdayField', 'compareWarningMessage'].forEach(function (key) {
+    if (field[key] === undefined || field[key] === null) {
+      delete normalized[key];
+      return;
+    }
+    const value = String(field[key]);
+    if (trim_(value)) {
+      normalized[key] = value;
+    } else {
+      delete normalized[key];
+    }
+  });
+  ['required', 'mustBeChecked', 'planned', 'includeActual'].forEach(function (key) {
+    if (field[key] === undefined || field[key] === null || field[key] === '') {
+      delete normalized[key];
+      return;
+    }
+    normalized[key] = submittedBoolean_(field[key]);
+  });
+  if (field.options !== undefined) {
+    normalized.options = normalizeAdminFormOptions_(field.options);
+  }
+  ['visibleWhen', 'requiredWhen'].forEach(function (key) {
+    if (field[key] && typeof field[key] === 'object' && !Array.isArray(field[key])) {
+      normalized[key] = cloneObject_(field[key]);
+    } else {
+      delete normalized[key];
+    }
+  });
+  return normalized;
+}
+
+function adminFormFieldRequiresName_(type) {
+  return ['content', 'divider', 'requestSummary', 'mealRules', 'hoursWarning'].indexOf(type) === -1;
+}
+
+function normalizeAdminFormOptions_(options) {
+  if (!Array.isArray(options)) {
+    throw new Error('Field options must be a list.');
+  }
+  return options.map(function (option) {
+    if (option && typeof option === 'object') {
+      return cloneObject_(option);
+    }
+    return trim_(option);
+  }).filter(function (option) {
+    return typeof option === 'object' || trim_(option);
+  });
+}
+
+function normalizeAdminFormFieldList_(value) {
+  const rawValues = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[\s,;]+/);
+  const fields = rawValues
+    .map(function (field) {
+      return normalizeWorkflowFieldName_(field, 'Adjustment field', false);
+    })
+    .filter(Boolean);
+  const seen = {};
+  return fields.filter(function (field) {
+    if (seen[field]) {
+      return false;
+    }
+    seen[field] = true;
+    return true;
+  });
+}
+
 function normalizeWorkflowStageKey_(value) {
   const stage = trim_(value).toLowerCase();
   if (!/^[a-z][a-z0-9_-]*$/.test(stage)) {
@@ -777,6 +1074,14 @@ function saveAdminWorkflowSettings_(settings) {
     return;
   }
   saveAdminWorkflowSettingsInMemory_(settings);
+}
+
+function saveAdminFormSettings_(settings) {
+  if (typeof nativeSaveAdminFormSettings_ === 'function') {
+    nativeSaveAdminFormSettings_(settings);
+    return;
+  }
+  FORM_DEFINITIONS[settings.definitionKey] = cloneObject_(settings.definition || {});
 }
 
 function saveAdminWorkflowSettingsInMemory_(settings) {

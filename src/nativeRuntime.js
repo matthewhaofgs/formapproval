@@ -44,6 +44,8 @@ const EXPORTED_NAMES = [
   'getDashboardData',
   'getAdminUserManagementData',
   'updateAdminUserSettings',
+  'getAdminFormManagementData',
+  'updateAdminFormSettings',
   'getAdminWorkflowManagementData',
   'updateAdminWorkflowSettings',
   'adminReassignRequest',
@@ -118,6 +120,7 @@ function createNativeRuntime(options = {}) {
     dateTimeCellValue_: dateTimeCellValue,
     isDateObject_: isDateObject,
     nativeSaveAdminUserSettings_: settings => nativeSaveAdminUserSettings(api, state, settings),
+    nativeSaveAdminFormSettings_: settings => nativeSaveAdminFormSettings(api, state, settings),
     nativeSaveAdminWorkflowSettings_: settings => nativeSaveAdminWorkflowSettings(api, state, settings),
     __nativeState: state
   };
@@ -344,6 +347,24 @@ function nativeSaveAdminWorkflowSettings(api, state, settings) {
         updated_at = now()
     WHERE category = 'process_definition'
       AND definition_key = ${sqlText(settings.processKey)};
+  `);
+  nativeRefreshDefinitions(api);
+  state.definitionsLoadedAt = Date.now();
+}
+
+function nativeSaveAdminFormSettings(api, state, settings) {
+  if (!api) {
+    throw new Error('Native runtime is not initialized.');
+  }
+
+  psql(`
+    INSERT INTO app_definitions (category, definition_key, data, source, enabled, updated_at)
+    VALUES ('form_definition', ${sqlText(settings.definitionKey)}, ${sqlJson(settings.definition || {})}, 'web-admin', true, now())
+    ON CONFLICT (category, definition_key) DO UPDATE SET
+      data = EXCLUDED.data,
+      source = 'web-admin',
+      enabled = true,
+      updated_at = now();
   `);
   nativeRefreshDefinitions(api);
   state.definitionsLoadedAt = Date.now();

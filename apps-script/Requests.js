@@ -17,6 +17,8 @@ function getInitialState_(params) {
       role: dashboardRole,
       selectedProcess: requestedProcess,
       adminView: trim_(params.adminView || ''),
+      formBuilderKey: trim_(params.formKey || ''),
+      formBuilderStage: trim_(params.formStage || ''),
       requireGoogleAuth: APP_SETTINGS.REQUIRE_GOOGLE_AUTH,
       allowEmailFallbackForTesting: APP_SETTINGS.ALLOW_EMAIL_FALLBACK_FOR_TESTING
     });
@@ -714,6 +716,9 @@ function getDashboardData(payload) {
   const workflowManagement = role === 'admin' && !selectedProcess && canManageUsers
     ? adminWorkflowManagementData_()
     : null;
+  const formManagement = role === 'admin' && !selectedProcess && canManageUsers
+    ? adminFormManagementData_()
+    : null;
   markDashboardTiming_(timing, 'database diagnostic');
   const allRequests = role === 'admin'
     ? (selectedProcess ? getRequestsForProcess_(selectedProcess) : [])
@@ -743,6 +748,7 @@ function getDashboardData(payload) {
         selectedProcessName: '',
         canManageUsers,
         userManagement: canManageUsers ? adminUserManagementData_() : null,
+        formManagement,
         workflowManagement,
         adminProcesses,
         adminDashboards: preloadedAdmin ? preloadedAdmin.adminDashboards : {},
@@ -774,6 +780,7 @@ function getDashboardData(payload) {
     selectedProcessName: selectedProcess ? ((getProcessOption_(selectedProcess) || {}).name || selectedProcess) : '',
     canManageUsers,
     userManagement: role === 'admin' && !selectedProcess && canManageUsers ? adminUserManagementData_() : null,
+    formManagement: role === 'admin' && !selectedProcess && canManageUsers ? formManagement : null,
     workflowManagement,
     adminProcesses,
     adminDashboards: {},

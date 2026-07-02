@@ -38,6 +38,8 @@ const API_METHODS = new Set([
   'getDashboardData',
   'getAdminUserManagementData',
   'updateAdminUserSettings',
+  'getAdminFormManagementData',
+  'updateAdminFormSettings',
   'getAdminWorkflowManagementData',
   'updateAdminWorkflowSettings',
   'adminReassignRequest',

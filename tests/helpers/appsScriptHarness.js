@@ -51,6 +51,8 @@ const EXPORTED_NAMES = [
   'getDashboardData',
   'getAdminUserManagementData',
   'updateAdminUserSettings',
+  'getAdminFormManagementData',
+  'updateAdminFormSettings',
   'getAdminWorkflowManagementData',
   'updateAdminWorkflowSettings',
   'adminReassignRequest',
